@@ -1,19 +1,17 @@
 import React from "react";
 import Bookmarks from "@/components/dashboard/bookmarks/Bookmarks";
-import TopNav from "@/components/dashboard/bookmarks/TopNav";
-import { Separator } from "@/components/ui/separator";
+import GlobalActions from "@/components/dashboard/GlobalActions";
+import { SearchInput } from "@/components/dashboard/search/SearchInput";
 
 export default async function BookmarksPage() {
   return (
     <div>
-      <TopNav />
-      <Separator />
-      <div className="my-4 flex-1">
-        <Bookmarks
-          header={<p className="text-2xl">Bookmarks</p>}
-          query={{ archived: false }}
-          showEditorCard={true}
-        />
+      <div className="flex gap-2">
+        <SearchInput />
+        <GlobalActions />
+      </div>
+      <div className="my-4">
+        <Bookmarks query={{ archived: false }} showEditorCard={true} />
       </div>
     </div>
   );

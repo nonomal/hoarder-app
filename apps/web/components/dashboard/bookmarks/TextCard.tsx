@@ -1,47 +1,24 @@
 "use client";
 
 import { useState } from "react";
-import { api } from "@/lib/trpc";
+import { MarkdownComponent } from "@/components/ui/markdown-component";
 import { bookmarkLayoutSwitch } from "@/lib/userLocalSettings/bookmarksLayout";
 import { cn } from "@/lib/utils";
-import Markdown from "react-markdown";
 
-import type { ZBookmark } from "@hoarder/shared/types/bookmarks";
-import { isBookmarkStillTagging } from "@hoarder/shared-react/utils/bookmarkUtils";
+import type { ZBookmarkTypeText } from "@hoarder/shared/types/bookmarks";
 
 import { BookmarkedTextViewer } from "./BookmarkedTextViewer";
 import { BookmarkLayoutAdaptingCard } from "./BookmarkLayoutAdaptingCard";
 
 export default function TextCard({
-  bookmark: initialData,
+  bookmark,
   className,
 }: {
-  bookmark: ZBookmark;
+  bookmark: ZBookmarkTypeText;
   className?: string;
 }) {
-  const { data: bookmark } = api.bookmarks.getBookmark.useQuery(
-    {
-      bookmarkId: initialData.id,
-    },
-    {
-      initialData,
-      refetchInterval: (query) => {
-        const data = query.state.data;
-        if (!data) {
-          return false;
-        }
-        if (isBookmarkStillTagging(data)) {
-          return 1000;
-        }
-        return false;
-      },
-    },
-  );
   const [previewModalOpen, setPreviewModalOpen] = useState(false);
   const bookmarkedText = bookmark.content;
-  if (bookmarkedText.type != "text") {
-    throw new Error("Unexpected bookmark type");
-  }
 
   return (
     <>
@@ -52,11 +29,7 @@ export default function TextCard({
       />
       <BookmarkLayoutAdaptingCard
         title={bookmark.title}
-        content={
-          <Markdown className="prose dark:prose-invert">
-            {bookmarkedText.text}
-          </Markdown>
-        }
+        content={<MarkdownComponent>{bookmarkedText.text}</MarkdownComponent>}
         footer={null}
         wrapTags={true}
         bookmark={bookmark}

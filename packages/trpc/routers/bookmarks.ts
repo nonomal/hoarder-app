@@ -1,5 +1,5 @@
 import { experimental_trpcMiddleware, TRPCError } from "@trpc/server";
-import { and, desc, eq, exists, inArray, lte, or } from "drizzle-orm";
+import { and, desc, eq, exists, inArray, lt, lte, or } from "drizzle-orm";
 import invariant from "tiny-invariant";
 import { z } from "zod";
 
@@ -10,6 +10,8 @@ import type {
 import type { ZBookmarkTags } from "@hoarder/shared/types/tags";
 import { db as DONT_USE_db } from "@hoarder/db";
 import {
+  assets,
+  AssetTypes,
   bookmarkAssets,
   bookmarkLinks,
   bookmarks,
@@ -22,10 +24,12 @@ import { deleteAsset } from "@hoarder/shared/assetdb";
 import {
   LinkCrawlerQueue,
   OpenAIQueue,
-  SearchIndexingQueue,
+  triggerSearchDeletion,
+  triggerSearchReindex,
 } from "@hoarder/shared/queues";
 import { getSearchIdxClient } from "@hoarder/shared/search";
 import {
+  BookmarkTypes,
   DEFAULT_NUM_BOOKMARKS_PER_PAGE,
   zBareBookmarkSchema,
   zBookmarkSchema,
@@ -70,6 +74,25 @@ export const ensureBookmarkOwnership = experimental_trpcMiddleware<{
   return opts.next();
 });
 
+interface Asset {
+  id: string;
+  assetType: AssetTypes;
+}
+
+const ASSET_TYE_MAPPING: Record<AssetTypes, string> = {
+  [AssetTypes.LINK_SCREENSHOT]: "screenshotAssetId",
+  [AssetTypes.LINK_FULL_PAGE_ARCHIVE]: "fullPageArchiveAssetId",
+  [AssetTypes.LINK_BANNER_IMAGE]: "imageAssetId",
+};
+
+function mapAssetsToBookmarkFields(assets: Asset | Asset[] = []) {
+  const assetsArray = Array.isArray(assets) ? assets : [assets];
+  return assetsArray.reduce((result: Record<string, string>, asset: Asset) => {
+    result[ASSET_TYE_MAPPING[asset.assetType]] = asset.id;
+    return result;
+  }, {});
+}
+
 async function getBookmark(ctx: AuthedContext, bookmarkId: string) {
   const bookmark = await ctx.db.query.bookmarks.findFirst({
     where: and(eq(bookmarks.userId, ctx.user.id), eq(bookmarks.id, bookmarkId)),
@@ -82,6 +105,7 @@ async function getBookmark(ctx: AuthedContext, bookmarkId: string) {
       link: true,
       text: true,
       asset: true,
+      assets: true,
     },
   });
   if (!bookmark) {
@@ -120,6 +144,7 @@ async function dummyDrizzleReturnType() {
       link: true,
       text: true,
       asset: true,
+      assets: true,
     },
   });
   if (!x) {
@@ -133,44 +158,48 @@ type BookmarkQueryReturnType = Awaited<
 >;
 
 async function cleanupAssetForBookmark(
-  bookmark: Pick<BookmarkQueryReturnType, "asset" | "link" | "userId">,
+  bookmark: Pick<BookmarkQueryReturnType, "asset" | "userId" | "assets">,
 ) {
-  const assetIds = [];
+  const assetIds: Set<string> = new Set<string>(
+    bookmark.assets.map((a) => a.id),
+  );
+  // Todo: Remove when the bookmark asset is also in the assets table
   if (bookmark.asset) {
-    assetIds.push(bookmark.asset.assetId);
-  }
-  if (bookmark.link) {
-    if (bookmark.link.screenshotAssetId) {
-      assetIds.push(bookmark.link.screenshotAssetId);
-    }
-    if (bookmark.link.imageAssetId) {
-      assetIds.push(bookmark.link.imageAssetId);
-    }
+    assetIds.add(bookmark.asset.assetId);
   }
   await Promise.all(
-    assetIds.map((assetId) =>
+    Array.from(assetIds).map((assetId) =>
       deleteAsset({ userId: bookmark.userId, assetId }),
     ),
   );
 }
 
 function toZodSchema(bookmark: BookmarkQueryReturnType): ZBookmark {
-  const { tagsOnBookmarks, link, text, asset, ...rest } = bookmark;
+  const { tagsOnBookmarks, link, text, asset, assets, ...rest } = bookmark;
 
-  let content: ZBookmarkContent;
-  if (link) {
-    content = { type: "link", ...link };
-  } else if (text) {
-    content = { type: "text", text: text.text ?? "" };
-  } else if (asset) {
-    content = {
-      type: "asset",
-      assetType: asset.assetType,
-      assetId: asset.assetId,
-      fileName: asset.fileName,
-    };
-  } else {
-    content = { type: "unknown" };
+  let content: ZBookmarkContent = {
+    type: BookmarkTypes.UNKNOWN,
+  };
+  switch (bookmark.type) {
+    case BookmarkTypes.LINK:
+      content = {
+        type: bookmark.type,
+        ...mapAssetsToBookmarkFields(assets),
+        ...link,
+      };
+      break;
+    case BookmarkTypes.TEXT:
+      content = { type: bookmark.type, text: text.text ?? "" };
+      break;
+    case BookmarkTypes.ASSET:
+      content = {
+        type: bookmark.type,
+        assetType: asset.assetType,
+        assetId: asset.assetId,
+        fileName: asset.fileName,
+        sourceUrl: asset.sourceUrl,
+      };
+      break;
   }
 
   return {
@@ -194,12 +223,15 @@ export const bookmarksAppRouter = router({
       ),
     )
     .mutation(async ({ input, ctx }) => {
-      if (input.type == "link") {
-        // This doesn't 100% protect from duplicates because of races but it's more than enough for this usecase.
+      if (input.type == BookmarkTypes.LINK) {
+        // This doesn't 100% protect from duplicates because of races, but it's more than enough for this usecase.
         const alreadyExists = await attemptToDedupLink(ctx, input.url);
         if (alreadyExists) {
           return { ...alreadyExists, alreadyExists: true };
         }
+      }
+      if (input.type == BookmarkTypes.UNKNOWN) {
+        throw new TRPCError({ code: "BAD_REQUEST" });
       }
       const bookmark = await ctx.db.transaction(async (tx) => {
         const bookmark = (
@@ -207,6 +239,7 @@ export const bookmarksAppRouter = router({
             .insert(bookmarks)
             .values({
               userId: ctx.user.id,
+              type: input.type,
             })
             .returning()
         )[0];
@@ -214,7 +247,7 @@ export const bookmarksAppRouter = router({
         let content: ZBookmarkContent;
 
         switch (input.type) {
-          case "link": {
+          case BookmarkTypes.LINK: {
             const link = (
               await tx
                 .insert(bookmarkLinks)
@@ -225,12 +258,12 @@ export const bookmarksAppRouter = router({
                 .returning()
             )[0];
             content = {
-              type: "link",
+              type: BookmarkTypes.LINK,
               ...link,
             };
             break;
           }
-          case "text": {
+          case BookmarkTypes.TEXT: {
             const text = (
               await tx
                 .insert(bookmarkTexts)
@@ -238,12 +271,12 @@ export const bookmarksAppRouter = router({
                 .returning()
             )[0];
             content = {
-              type: "text",
+              type: BookmarkTypes.TEXT,
               text: text.text ?? "",
             };
             break;
           }
-          case "asset": {
+          case BookmarkTypes.ASSET: {
             const [asset] = await tx
               .insert(bookmarkAssets)
               .values({
@@ -253,17 +286,15 @@ export const bookmarksAppRouter = router({
                 content: null,
                 metadata: null,
                 fileName: input.fileName ?? null,
+                sourceUrl: null,
               })
               .returning();
             content = {
-              type: "asset",
+              type: BookmarkTypes.ASSET,
               assetType: asset.assetType,
               assetId: asset.assetId,
             };
             break;
-          }
-          case "unknown": {
-            throw new TRPCError({ code: "BAD_REQUEST" });
           }
         }
 
@@ -277,25 +308,22 @@ export const bookmarksAppRouter = router({
 
       // Enqueue crawling request
       switch (bookmark.content.type) {
-        case "link": {
+        case BookmarkTypes.LINK: {
           // The crawling job triggers openai when it's done
           await LinkCrawlerQueue.add("crawl", {
             bookmarkId: bookmark.id,
           });
           break;
         }
-        case "text":
-        case "asset": {
+        case BookmarkTypes.TEXT:
+        case BookmarkTypes.ASSET: {
           await OpenAIQueue.add("openai", {
             bookmarkId: bookmark.id,
           });
           break;
         }
       }
-      SearchIndexingQueue.add("search_indexing", {
-        bookmarkId: bookmark.id,
-        type: "index",
-      });
+      triggerSearchReindex(bookmark.id);
       return bookmark;
     }),
 
@@ -325,10 +353,7 @@ export const bookmarksAppRouter = router({
           message: "Bookmark not found",
         });
       }
-      SearchIndexingQueue.add("search_indexing", {
-        bookmarkId: input.bookmarkId,
-        type: "index",
-      });
+      triggerSearchReindex(input.bookmarkId);
       return res[0];
     }),
 
@@ -336,7 +361,7 @@ export const bookmarksAppRouter = router({
     .input(
       z.object({
         bookmarkId: z.string(),
-        text: z.string().max(2000),
+        text: z.string(),
       }),
     )
     .use(ensureBookmarkOwnership)
@@ -354,10 +379,7 @@ export const bookmarksAppRouter = router({
           message: "Bookmark not found",
         });
       }
-      SearchIndexingQueue.add("search_indexing", {
-        bookmarkId: input.bookmarkId,
-        type: "index",
-      });
+      triggerSearchReindex(input.bookmarkId);
     }),
 
   deleteBookmark: authedProcedure
@@ -372,6 +394,7 @@ export const bookmarksAppRouter = router({
         with: {
           asset: true,
           link: true,
+          assets: true,
         },
       });
       const deleted = await ctx.db
@@ -382,15 +405,12 @@ export const bookmarksAppRouter = router({
             eq(bookmarks.id, input.bookmarkId),
           ),
         );
-      SearchIndexingQueue.add("search_indexing", {
-        bookmarkId: input.bookmarkId,
-        type: "delete",
-      });
+      triggerSearchDeletion(input.bookmarkId);
       if (deleted.changes > 0 && bookmark) {
         await cleanupAssetForBookmark({
           asset: bookmark.asset,
-          link: bookmark.link,
           userId: ctx.user.id,
+          assets: bookmark.assets,
         });
       }
     }),
@@ -459,6 +479,7 @@ export const bookmarksAppRouter = router({
           link: true,
           text: true,
           asset: true,
+          assets: true,
         },
       });
       results.sort((a, b) => idToRank[b.id] - idToRank[a.id]);
@@ -516,11 +537,21 @@ export const bookmarksAppRouter = router({
                       ),
                   )
                 : undefined,
-              input.cursor ? lte(bookmarks.createdAt, input.cursor) : undefined,
+              input.cursor
+                ? input.cursor instanceof Date
+                  ? lte(bookmarks.createdAt, input.cursor)
+                  : or(
+                      lt(bookmarks.createdAt, input.cursor.createdAt),
+                      and(
+                        eq(bookmarks.createdAt, input.cursor.createdAt),
+                        lte(bookmarks.id, input.cursor.id),
+                      ),
+                    )
+                : undefined,
             ),
           )
           .limit(input.limit + 1)
-          .orderBy(desc(bookmarks.createdAt)),
+          .orderBy(desc(bookmarks.createdAt), desc(bookmarks.id)),
       );
       // TODO: Consider not inlining the tags in the response of getBookmarks as this query is getting kinda expensive
       const results = await ctx.db
@@ -532,26 +563,36 @@ export const bookmarksAppRouter = router({
         .leftJoin(bookmarkLinks, eq(bookmarkLinks.id, sq.id))
         .leftJoin(bookmarkTexts, eq(bookmarkTexts.id, sq.id))
         .leftJoin(bookmarkAssets, eq(bookmarkAssets.id, sq.id))
-        .orderBy(desc(sq.createdAt));
+        .leftJoin(assets, eq(assets.bookmarkId, sq.id))
+        .orderBy(desc(sq.createdAt), desc(sq.id));
 
       const bookmarksRes = results.reduce<Record<string, ZBookmark>>(
         (acc, row) => {
           const bookmarkId = row.bookmarksSq.id;
           if (!acc[bookmarkId]) {
             let content: ZBookmarkContent;
-            if (row.bookmarkLinks) {
-              content = { type: "link", ...row.bookmarkLinks };
-            } else if (row.bookmarkTexts) {
-              content = { type: "text", text: row.bookmarkTexts.text ?? "" };
-            } else if (row.bookmarkAssets) {
-              content = {
-                type: "asset",
-                assetId: row.bookmarkAssets.assetId,
-                assetType: row.bookmarkAssets.assetType,
-                fileName: row.bookmarkAssets.fileName,
-              };
-            } else {
-              content = { type: "unknown" };
+            switch (row.bookmarksSq.type) {
+              case BookmarkTypes.LINK: {
+                content = { type: row.bookmarksSq.type, ...row.bookmarkLinks! };
+                break;
+              }
+              case BookmarkTypes.TEXT: {
+                content = {
+                  type: row.bookmarksSq.type,
+                  text: row.bookmarkTexts?.text ?? "",
+                };
+                break;
+              }
+              case BookmarkTypes.ASSET: {
+                const bookmarkAssets = row.bookmarkAssets!;
+                content = {
+                  type: row.bookmarksSq.type,
+                  assetId: bookmarkAssets.assetId,
+                  assetType: bookmarkAssets.assetType,
+                  fileName: bookmarkAssets.fileName,
+                };
+                break;
+              }
             }
             acc[bookmarkId] = {
               ...row.bookmarksSq,
@@ -560,7 +601,11 @@ export const bookmarksAppRouter = router({
             };
           }
 
-          if (row.bookmarkTags) {
+          if (
+            row.bookmarkTags &&
+            // Duplicates may occur because of the join, so we need to make sure we're not adding the same tag twice
+            !acc[bookmarkId].tags.some((t) => t.id == row.bookmarkTags!.id)
+          ) {
             invariant(
               row.tagsOnBookmarks,
               "if bookmark tag is set, its many-to-many relation must also be set",
@@ -571,6 +616,13 @@ export const bookmarksAppRouter = router({
             });
           }
 
+          if (row.assets) {
+            acc[bookmarkId].content = {
+              ...acc[bookmarkId].content,
+              ...mapAssetsToBookmarkFields(row.assets),
+            };
+          }
+
           return acc;
         },
         {},
@@ -578,10 +630,25 @@ export const bookmarksAppRouter = router({
 
       const bookmarksArr = Object.values(bookmarksRes);
 
+      bookmarksArr.sort((a, b) => {
+        if (a.createdAt != b.createdAt) {
+          return b.createdAt.getTime() - a.createdAt.getTime();
+        } else {
+          return b.id.localeCompare(a.id);
+        }
+      });
+
       let nextCursor = null;
       if (bookmarksArr.length > input.limit) {
-        const nextItem = bookmarksArr.pop();
-        nextCursor = nextItem?.createdAt ?? null;
+        const nextItem = bookmarksArr.pop()!;
+        if (input.useCursorV2) {
+          nextCursor = {
+            id: nextItem.id,
+            createdAt: nextItem.createdAt,
+          };
+        } else {
+          nextCursor = nextItem.createdAt;
+        }
       }
 
       return { bookmarks: bookmarksArr, nextCursor };
@@ -610,7 +677,7 @@ export const bookmarksAppRouter = router({
     )
     .use(ensureBookmarkOwnership)
     .mutation(async ({ input, ctx }) => {
-      return await ctx.db.transaction(async (tx) => {
+      return ctx.db.transaction(async (tx) => {
         // Detaches
         if (input.detach.length > 0) {
           await tx.delete(tagsOnBookmarks).where(
@@ -680,6 +747,7 @@ export const bookmarksAppRouter = router({
             })),
           )
           .onConflictDoNothing();
+        triggerSearchReindex(input.bookmarkId);
         return {
           bookmarkId: input.bookmarkId,
           attached: allIds,

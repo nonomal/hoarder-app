@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Hoarder",
   "description": "An extension to bookmark links to hoarder.app",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "icons": {
     "16": "public/logo-16.png",
     "48": "public/logo-48.png",
@@ -10,6 +10,9 @@
   },
   "action": {
     "default_popup": "index.html"
+  },
+  "background": {
+    "service_worker": "src/background/background.ts"
   },
   "options_ui": {
     "page": "index.html#options",
@@ -20,5 +23,8 @@
       "id": "addon@hoarder.app"
     }
   },
-  "permissions": ["storage", "tabs"]
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'"
+  },
+  "permissions": ["storage", "tabs", "contextMenus"]
 }

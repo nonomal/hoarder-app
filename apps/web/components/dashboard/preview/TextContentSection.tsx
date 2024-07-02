@@ -1,17 +1,15 @@
+import { MarkdownComponent } from "@/components/ui/markdown-component";
 import { ScrollArea } from "@radix-ui/react-scroll-area";
-import Markdown from "react-markdown";
 
-import type { ZBookmark } from "@hoarder/shared/types/bookmarks";
+import { BookmarkTypes, ZBookmark } from "@hoarder/shared/types/bookmarks";
 
 export function TextContentSection({ bookmark }: { bookmark: ZBookmark }) {
-  if (bookmark.content.type != "text") {
+  if (bookmark.content.type != BookmarkTypes.TEXT) {
     throw new Error("Invalid content type");
   }
   return (
     <ScrollArea className="h-full">
-      <Markdown className="prose mx-auto dark:prose-invert">
-        {bookmark.content.text}
-      </Markdown>
+      <MarkdownComponent>{bookmark.content.text}</MarkdownComponent>
     </ScrollArea>
   );
 }

@@ -17,11 +17,11 @@ import dayjs from "dayjs";
 import relativeTime from "dayjs/plugin/relativeTime";
 import { CalendarDays, ExternalLink } from "lucide-react";
 
-import type { ZBookmark } from "@hoarder/shared/types/bookmarks";
 import {
   isBookmarkStillCrawling,
   isBookmarkStillLoading,
 } from "@hoarder/shared-react/utils/bookmarkUtils";
+import { BookmarkTypes, ZBookmark } from "@hoarder/shared/types/bookmarks";
 
 import ActionBar from "./ActionBar";
 import { AssetContentSection } from "./AssetContentSection";
@@ -65,6 +65,16 @@ function CreationTime({ createdAt }: { createdAt: Date }) {
   );
 }
 
+function getSourceUrl(bookmark: ZBookmark) {
+  if (bookmark.content.type === BookmarkTypes.LINK) {
+    return bookmark.content.url;
+  }
+  if (bookmark.content.type === BookmarkTypes.ASSET) {
+    return bookmark.content.sourceUrl;
+  }
+  return null;
+}
+
 export default function BookmarkPreview({
   bookmarkId,
   initialData,
@@ -98,19 +108,21 @@ export default function BookmarkPreview({
 
   let content;
   switch (bookmark.content.type) {
-    case "link": {
+    case BookmarkTypes.LINK: {
       content = <LinkContentSection bookmark={bookmark} />;
       break;
     }
-    case "text": {
+    case BookmarkTypes.TEXT: {
       content = <TextContentSection bookmark={bookmark} />;
       break;
     }
-    case "asset": {
+    case BookmarkTypes.ASSET: {
       content = <AssetContentSection bookmark={bookmark} />;
       break;
     }
   }
+
+  const sourceUrl = getSourceUrl(bookmark);
 
   return (
     <div className="grid h-full grid-rows-3 gap-2 overflow-hidden bg-background lg:grid-cols-3 lg:grid-rows-none">
@@ -120,9 +132,9 @@ export default function BookmarkPreview({
       <div className="lg:col-span1 row-span-1 flex flex-col gap-4 overflow-auto bg-accent p-4 lg:row-auto">
         <div className="flex w-full flex-col items-center justify-center gap-y-2">
           <EditableTitle bookmark={bookmark} />
-          {bookmark.content.type == "link" && (
+          {sourceUrl && (
             <Link
-              href={bookmark.content.url}
+              href={sourceUrl}
               className="flex items-center gap-2 text-gray-400"
             >
               <span>View Original</span>
@@ -133,12 +145,12 @@ export default function BookmarkPreview({
         </div>
 
         <CreationTime createdAt={bookmark.createdAt} />
-        <div className="flex gap-4">
+        <div className="flex items-center gap-4">
           <p className="text-sm text-gray-400">Tags</p>
           <TagsEditor bookmark={bookmark} />
         </div>
         <div className="flex gap-4">
-          <p className="text-sm text-gray-400">Note</p>
+          <p className="pt-2 text-sm text-gray-400">Note</p>
           <NoteEditor bookmark={bookmark} />
         </div>
         <ActionBar bookmark={bookmark} />

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json.schemastore.org/package.json",
   "name": "@hoarderapp/cli",
-  "version": "0.13.3",
+  "version": "0.13.5",
   "description": "Command Line Interface (CLI) for Hoarder",
   "license": "GNU Affero General Public License version 3",
   "keywords": [
@@ -38,7 +38,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/MohamedBassem/hoarder-app.git",
+    "url": "git+https://github.com/hoarder-app/hoarder.git",
     "directory": "apps/cli"
   },
   "eslintConfig": {

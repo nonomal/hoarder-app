@@ -2,6 +2,7 @@ import { Text } from "react-native";
 import { api } from "@/lib/trpc";
 
 import type { ZGetBookmarksRequest } from "@hoarder/shared/types/bookmarks";
+import { BookmarkTypes } from "@hoarder/shared/types/bookmarks";
 
 import FullPageSpinner from "../ui/FullPageSpinner";
 import BookmarkList from "./BookmarkList";
@@ -21,10 +22,13 @@ export default function UpdatingBookmarkList({
     error,
     fetchNextPage,
     isFetchingNextPage,
-  } = api.bookmarks.getBookmarks.useInfiniteQuery(query, {
-    initialCursor: null,
-    getNextPageParam: (lastPage) => lastPage.nextCursor,
-  });
+  } = api.bookmarks.getBookmarks.useInfiniteQuery(
+    { ...query, useCursorV2: true },
+    {
+      initialCursor: null,
+      getNextPageParam: (lastPage) => lastPage.nextCursor,
+    },
+  );
 
   if (error) {
     return <Text>{JSON.stringify(error)}</Text>;
@@ -43,7 +47,7 @@ export default function UpdatingBookmarkList({
     <BookmarkList
       bookmarks={data.pages
         .flatMap((p) => p.bookmarks)
-        .filter((b) => b.content.type != "unknown")}
+        .filter((b) => b.content.type != BookmarkTypes.UNKNOWN)}
       header={header}
       onRefresh={onRefresh}
       fetchNextPage={fetchNextPage}

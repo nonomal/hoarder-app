@@ -17,7 +17,7 @@ import logger from "@hoarder/shared/logger";
 import {
   OpenAIQueue,
   queueConnectionDetails,
-  SearchIndexingQueue,
+  triggerSearchReindex,
   zOpenAIRequestSchema,
 } from "@hoarder/shared/queues";
 
@@ -257,11 +257,13 @@ async function inferTags(
     );
 
     // Sometimes the tags contain the hashtag symbol, let's strip them out if they do.
+    // Additionally, trim the tags to prevent whitespaces at the beginning/the end of the tag.
     tags = tags.map((t) => {
-      if (t.startsWith("#")) {
-        return t.slice(1);
+      let tag = t;
+      if (tag.startsWith("#")) {
+        tag = t.slice(1);
       }
-      return t;
+      return tag.trim();
     });
 
     return tags;
@@ -394,8 +396,5 @@ async function runOpenAI(job: Job<ZOpenAIRequest, void>) {
   await connectTags(bookmarkId, tags, bookmark.userId);
 
   // Update the search index
-  SearchIndexingQueue.add("search_indexing", {
-    bookmarkId,
-    type: "index",
-  });
+  triggerSearchReindex(bookmarkId);
 }
