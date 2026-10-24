@@ -1,23 +1,33 @@
-import { useEffect, useState } from "react";
-import { ActivityIndicator, Text, View } from "react-native";
+import { useEffect, useRef, useState } from "react";
+import { Pressable, View } from "react-native";
+import Animated, { FadeIn } from "react-native-reanimated";
 import { useRouter } from "expo-router";
 import { useShareIntentContext } from "expo-share-intent";
+import ErrorAnimation from "@/components/sharing/ErrorAnimation";
+import LoadingAnimation from "@/components/sharing/LoadingAnimation";
+import SuccessAnimation from "@/components/sharing/SuccessAnimation";
+import { Button } from "@/components/ui/Button";
+import { Text } from "@/components/ui/Text";
 import useAppSettings from "@/lib/settings";
-import { api } from "@/lib/trpc";
 import { useUploadAsset } from "@/lib/upload";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { z } from "zod";
 
-import type { ZBookmark } from "@hoarder/shared/types/bookmarks";
+import { useTRPC } from "@karakeep/shared-react/trpc";
+import { BookmarkTypes, ZBookmark } from "@karakeep/shared/types/bookmarks";
 
 type Mode =
   | { type: "idle" }
   | { type: "success"; bookmarkId: string }
   | { type: "alreadyExists"; bookmarkId: string }
-  | { type: "error" };
+  | { type: "error"; message: string };
 
 function SaveBookmark({ setMode }: { setMode: (mode: Mode) => void }) {
+  const api = useTRPC();
+  const queryClient = useQueryClient();
+
   const onSaved = (d: ZBookmark & { alreadyExists: boolean }) => {
-    invalidateAllBookmarks();
+    queryClient.invalidateQueries(api.bookmarks.getBookmarks.pathFilter());
     setMode({
       type: d.alreadyExists ? "alreadyExists" : "success",
       bookmarkId: d.id,
@@ -29,29 +39,40 @@ function SaveBookmark({ setMode }: { setMode: (mode: Mode) => void }) {
   const { settings, isLoading } = useAppSettings();
   const { uploadAsset } = useUploadAsset(settings, {
     onSuccess: onSaved,
-    onError: () => {
-      setMode({ type: "error" });
+    onError: (message) => {
+      setMode({ type: "error", message });
     },
   });
-
-  const invalidateAllBookmarks =
-    api.useUtils().bookmarks.getBookmarks.invalidate;
 
   useEffect(() => {
     if (isLoading) {
       return;
     }
-    if (!isPending && shareIntent?.text) {
+    if (!isPending && shareIntent.webUrl) {
+      mutate({
+        type: BookmarkTypes.LINK,
+        url: shareIntent.webUrl,
+        source: "mobile",
+      });
+    } else if (!isPending && shareIntent?.text) {
       const val = z.string().url();
       if (val.safeParse(shareIntent.text).success) {
         // This is a URL, else treated as text
-        mutate({ type: "link", url: shareIntent.text });
+        mutate({
+          type: BookmarkTypes.LINK,
+          url: shareIntent.text,
+          source: "mobile",
+        });
       } else {
-        mutate({ type: "text", text: shareIntent.text });
+        mutate({
+          type: BookmarkTypes.TEXT,
+          text: shareIntent.text,
+          source: "mobile",
+        });
       }
     } else if (!isPending && shareIntent?.files) {
       uploadAsset({
-        type: shareIntent.files[0].type,
+        type: shareIntent.files[0].mimeType,
         name: shareIntent.files[0].fileName ?? "",
         uri: shareIntent.files[0].path,
       });
@@ -61,44 +82,42 @@ function SaveBookmark({ setMode }: { setMode: (mode: Mode) => void }) {
     }
   }, [isLoading]);
 
-  const { mutate, isPending } = api.bookmarks.createBookmark.useMutation({
-    onSuccess: onSaved,
-    onError: () => {
-      setMode({ type: "error" });
-    },
-  });
-
-  return (
-    <View className="flex flex-row gap-3">
-      <Text className="text-4xl text-foreground">Hoarding</Text>
-      <ActivityIndicator />
-    </View>
+  const { mutate, isPending } = useMutation(
+    api.bookmarks.createBookmark.mutationOptions({
+      onSuccess: onSaved,
+      onError: (error) => {
+        setMode({ type: "error", message: error.message });
+      },
+    }),
   );
+
+  return null;
 }
+
+// Saving normally settles in well under a second. If we're still idle after
+// this long the save is wedged -- an empty share intent leaves nothing to
+// mutate, and a request against an unreachable server can hang far longer --
+// so offer a way out rather than an indefinite spinner.
+const IDLE_ESCAPE_HATCH_MS = 5000;
 
 export default function Sharing() {
   const router = useRouter();
   const [mode, setMode] = useState<Mode>({ type: "idle" });
+  const [showIdleEscapeHatch, setShowIdleEscapeHatch] = useState(false);
 
-  let comp;
-  switch (mode.type) {
-    case "idle": {
-      comp = <SaveBookmark setMode={setMode} />;
-      break;
+  const autoCloseTimeoutId = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (mode.type !== "idle") {
+      setShowIdleEscapeHatch(false);
+      return;
     }
-    case "success": {
-      comp = <Text className="text-4xl text-foreground">Hoarded!</Text>;
-      break;
-    }
-    case "alreadyExists": {
-      comp = <Text className="text-4xl text-foreground">Already Hoarded!</Text>;
-      break;
-    }
-    case "error": {
-      comp = <Text className="text-4xl text-foreground">Error!</Text>;
-      break;
-    }
-  }
+    const timeoutId = setTimeout(
+      () => setShowIdleEscapeHatch(true),
+      IDLE_ESCAPE_HATCH_MS,
+    );
+    return () => clearTimeout(timeoutId);
+  }, [mode.type]);
 
   // Auto dismiss the modal after saving.
   useEffect(() => {
@@ -106,14 +125,136 @@ export default function Sharing() {
       return;
     }
 
-    const timeoutId = setTimeout(() => {
-      router.replace("dashboard");
-    }, 2000);
+    autoCloseTimeoutId.current = setTimeout(
+      () => {
+        router.replace("dashboard");
+      },
+      mode.type === "error" ? 3000 : 2500,
+    );
 
-    return () => clearTimeout(timeoutId);
+    return () => {
+      if (autoCloseTimeoutId.current) {
+        clearTimeout(autoCloseTimeoutId.current);
+      }
+    };
   }, [mode.type]);
 
+  const handleManage = () => {
+    if (mode.type === "success" || mode.type === "alreadyExists") {
+      router.replace(`/dashboard/bookmarks/${mode.bookmarkId}/info`);
+      if (autoCloseTimeoutId.current) {
+        clearTimeout(autoCloseTimeoutId.current);
+      }
+    }
+  };
+
+  const handleDismiss = () => {
+    if (autoCloseTimeoutId.current) {
+      clearTimeout(autoCloseTimeoutId.current);
+    }
+    router.replace("dashboard");
+  };
+
   return (
-    <View className="flex-1 items-center justify-center gap-4">{comp}</View>
+    <View className="flex-1 items-center justify-center bg-background">
+      {/* Hidden component that handles the save logic */}
+      {mode.type === "idle" && <SaveBookmark setMode={setMode} />}
+
+      {/* Loading State */}
+      {mode.type === "idle" && (
+        <View className="items-center gap-6">
+          <LoadingAnimation />
+          {showIdleEscapeHatch && (
+            <Animated.View
+              entering={FadeIn.duration(200)}
+              className="items-center gap-2"
+            >
+              <Text variant="body" className="text-muted-foreground">
+                Still saving...
+              </Text>
+              <Pressable
+                onPress={handleDismiss}
+                className="px-4 py-2 active:opacity-60"
+              >
+                <Text className="text-muted-foreground">Dismiss</Text>
+              </Pressable>
+            </Animated.View>
+          )}
+        </View>
+      )}
+
+      {/* Success State */}
+      {(mode.type === "success" || mode.type === "alreadyExists") && (
+        <Animated.View
+          entering={FadeIn.duration(200)}
+          className="items-center gap-6"
+        >
+          <SuccessAnimation />
+
+          <Animated.View
+            entering={FadeIn.delay(400).duration(300)}
+            className="items-center gap-2"
+          >
+            <Text variant="title1" className="font-semibold text-foreground">
+              {mode.type === "alreadyExists" ? "Hoarded again!" : "Hoarded!"}
+            </Text>
+            <Text variant="body" className="text-muted-foreground">
+              Saved to your collection
+            </Text>
+          </Animated.View>
+
+          <Animated.View
+            entering={FadeIn.delay(600).duration(300)}
+            className="items-center gap-3 pt-2"
+          >
+            <Button onPress={handleManage} variant="primary" size="lg">
+              <Text className="font-medium text-primary-foreground">
+                Manage
+              </Text>
+            </Button>
+            <Pressable
+              onPress={handleDismiss}
+              className="px-4 py-2 active:opacity-60"
+            >
+              <Text className="text-muted-foreground">Dismiss</Text>
+            </Pressable>
+          </Animated.View>
+        </Animated.View>
+      )}
+
+      {/* Error State */}
+      {mode.type === "error" && (
+        <Animated.View
+          entering={FadeIn.duration(200)}
+          className="items-center gap-6"
+        >
+          <ErrorAnimation />
+
+          <Animated.View
+            entering={FadeIn.delay(300).duration(300)}
+            className="items-center gap-2"
+          >
+            <Text variant="title1" className="font-semibold text-foreground">
+              Oops!
+            </Text>
+            <Text variant="body" className="text-muted-foreground">
+              {mode.message}
+            </Text>
+          </Animated.View>
+
+          <Animated.View
+            entering={FadeIn.delay(500).duration(300)}
+            className="items-center gap-3 pt-2"
+          >
+            <Pressable
+              onPress={handleDismiss}
+              className="px-4 py-2 active:opacity-60"
+            >
+              <Text className="text-muted-foreground">Dismiss</Text>
+            </Pressable>
+          </Animated.View>
+        </Animated.View>
+      )}
+    </View>
   );
 }

@@ -2,23 +2,39 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { api } from "@/lib/trpc";
+import { useUserSettings } from "@/lib/userSettings";
 
-import type { ZBookmarkTypeLink } from "@hoarder/shared/types/bookmarks";
+import type { ZBookmarkTypeLink } from "@karakeep/shared/types/bookmarks";
 import {
   getBookmarkLinkImageUrl,
+  getBookmarkTitle,
+  getSourceUrl,
   isBookmarkStillCrawling,
-  isBookmarkStillLoading,
-} from "@hoarder/shared-react/utils/bookmarkUtils";
+} from "@karakeep/shared/utils/bookmarkUtils";
 
 import { BookmarkLayoutAdaptingCard } from "./BookmarkLayoutAdaptingCard";
+import FooterLinkURL from "./FooterLinkURL";
+
+const useOnClickUrl = (bookmark: ZBookmarkTypeLink) => {
+  const userSettings = useUserSettings();
+  return {
+    urlTarget:
+      userSettings.bookmarkClickAction === "open_original_link"
+        ? ("_blank" as const)
+        : ("_self" as const),
+    onClickUrl:
+      userSettings.bookmarkClickAction === "expand_bookmark_preview"
+        ? `/dashboard/preview/${bookmark.id}`
+        : bookmark.content.url,
+  };
+};
 
 function LinkTitle({ bookmark }: { bookmark: ZBookmarkTypeLink }) {
-  const link = bookmark.content;
-  const parsedUrl = new URL(link.url);
+  const { onClickUrl, urlTarget } = useOnClickUrl(bookmark);
+  const parsedUrl = new URL(bookmark.content.url);
   return (
-    <Link href={link.url} target="_blank">
-      {bookmark.title ?? link?.title ?? parsedUrl.host}
+    <Link href={onClickUrl} target={urlTarget} rel="noreferrer">
+      {getBookmarkTitle(bookmark) ?? parsedUrl.host}
     </Link>
   );
 }
@@ -30,6 +46,7 @@ function LinkImage({
   bookmark: ZBookmarkTypeLink;
   className?: string;
 }) {
+  const { onClickUrl, urlTarget } = useOnClickUrl(bookmark);
   const link = bookmark.content;
 
   const imgComponent = (url: string, unoptimized: boolean) => (
@@ -44,11 +61,11 @@ function LinkImage({
 
   const imageDetails = getBookmarkLinkImageUrl(link);
 
-  let img: React.ReactNode = null;
+  let img: React.ReactNode;
   if (isBookmarkStillCrawling(bookmark)) {
     img = imgComponent("/blur.avif", false);
   } else if (imageDetails) {
-    img = imgComponent(imageDetails.url, !imageDetails.localAsset);
+    img = imgComponent(imageDetails.url, true);
   } else {
     // No image found
     // A dummy white pixel for when there's no image.
@@ -59,69 +76,37 @@ function LinkImage({
   }
 
   return (
-    <Link href={link.url} target="_blank" className={className}>
+    <Link
+      href={onClickUrl}
+      target={urlTarget}
+      rel="noreferrer"
+      className={className}
+    >
       <div className="relative size-full flex-1">{img}</div>
     </Link>
   );
 }
 
-function LinkUrl({ bookmark }: { bookmark: ZBookmarkTypeLink }) {
-  const link = bookmark.content;
-  const parsedUrl = new URL(link.url);
-  return (
-    <Link
-      className="line-clamp-1 hover:text-foreground"
-      href={link.url}
-      target="_blank"
-    >
-      {parsedUrl.host}
-    </Link>
-  );
-}
-
 export default function LinkCard({
-  bookmark: initialData,
+  bookmark: bookmarkLink,
   className,
+  bookmarkIndex,
 }: {
   bookmark: ZBookmarkTypeLink;
   className?: string;
+  bookmarkIndex?: number;
 }) {
-  const { data: bookmark } = api.bookmarks.getBookmark.useQuery(
-    {
-      bookmarkId: initialData.id,
-    },
-    {
-      initialData,
-      refetchInterval: (query) => {
-        const data = query.state.data;
-        if (!data) {
-          return false;
-        }
-        // If the link is not crawled or not tagged
-        if (isBookmarkStillLoading(data)) {
-          return 1000;
-        }
-        return false;
-      },
-    },
-  );
-
-  if (bookmark.content.type !== "link") {
-    throw new Error("Invalid bookmark type");
-  }
-
-  const bookmarkLink = { ...bookmark, content: bookmark.content };
-
   return (
     <BookmarkLayoutAdaptingCard
       title={<LinkTitle bookmark={bookmarkLink} />}
-      footer={<LinkUrl bookmark={bookmarkLink} />}
+      footer={<FooterLinkURL url={getSourceUrl(bookmarkLink)} />}
       bookmark={bookmarkLink}
       wrapTags={false}
       image={(_layout, className) => (
         <LinkImage className={className} bookmark={bookmarkLink} />
       )}
       className={className}
+      bookmarkIndex={bookmarkIndex}
     />
   );
 }

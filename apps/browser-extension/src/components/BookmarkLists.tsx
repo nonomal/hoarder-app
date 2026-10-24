@@ -1,19 +1,23 @@
+import { useQuery } from "@tanstack/react-query";
 import { X } from "lucide-react";
 
 import {
   useBookmarkLists,
   useRemoveBookmarkFromList,
-} from "@hoarder/shared-react/hooks/lists";
+} from "@karakeep/shared-react/hooks/lists";
 
-import { api } from "../utils/trpc";
+import { useTRPC } from "../utils/trpc";
 import { Button } from "./ui/button";
 
 export default function BookmarkLists({ bookmarkId }: { bookmarkId: string }) {
+  const api = useTRPC();
   const { data: allLists } = useBookmarkLists();
 
   const { mutate: deleteFromList } = useRemoveBookmarkFromList();
 
-  const { data: lists } = api.lists.getListsOfBookmark.useQuery({ bookmarkId });
+  const { data: lists } = useQuery(
+    api.lists.getListsOfBookmark.queryOptions({ bookmarkId }),
+  );
   if (!lists || !allLists) {
     return null;
   }

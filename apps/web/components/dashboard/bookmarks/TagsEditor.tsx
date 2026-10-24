@@ -1,164 +1,438 @@
-import type { ActionMeta } from "react-select";
-import { toast } from "@/components/ui/use-toast";
+import React, { useState } from "react";
+import { Button } from "@/components/ui/button";
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { useClientConfig } from "@/lib/clientConfig";
-import { api } from "@/lib/trpc";
+import { useTranslation } from "@/lib/i18n/client";
 import { cn } from "@/lib/utils";
-import { Sparkles } from "lucide-react";
-import CreateableSelect from "react-select/creatable";
+import { isServer, keepPreviousData, useQuery } from "@tanstack/react-query";
+import { Command as CommandPrimitive } from "cmdk";
+import { Check, Loader2, Plus, Sparkles, X } from "lucide-react";
 
-import type { ZBookmark } from "@hoarder/shared/types/bookmarks";
-import type { ZAttachedByEnum } from "@hoarder/shared/types/tags";
-import { useUpdateBookmarkTags } from "@hoarder/shared-react/hooks/bookmarks";
+import type { ZBookmarkTags } from "@karakeep/shared/types/tags";
+import { useTRPC } from "@karakeep/shared-react/trpc";
 
-interface EditableTag {
-  attachedBy: ZAttachedByEnum;
-  value?: string;
-  label: string;
-}
-
-export function TagsEditor({ bookmark }: { bookmark: ZBookmark }) {
+export function TagsEditor({
+  tags: _tags,
+  onAttach,
+  onDetach,
+  disabled,
+  allowCreation = true,
+  placeholder,
+}: {
+  tags: ZBookmarkTags[];
+  onAttach: (tag: { tagName: string; tagId?: string }) => void;
+  onDetach: (tag: { tagName: string; tagId: string }) => void;
+  disabled?: boolean;
+  allowCreation?: boolean;
+  placeholder?: string;
+}) {
+  const api = useTRPC();
+  const { t } = useTranslation();
   const demoMode = !!useClientConfig().demoMode;
+  const isDisabled = demoMode || disabled;
+  const inputRef = React.useRef<HTMLInputElement>(null);
+  const containerRef = React.useRef<HTMLDivElement>(null);
+  const [open, setOpen] = React.useState(false);
+  const [inputValue, setInputValue] = React.useState("");
+  const [optimisticTags, setOptimisticTags] = useState<ZBookmarkTags[]>(_tags);
+  const tempIdCounter = React.useRef(0);
+  const hasInitializedRef = React.useRef(_tags.length > 0);
 
-  const { mutate } = useUpdateBookmarkTags({
-    onSuccess: () => {
-      toast({
-        description: "Tags has been updated!",
-      });
-    },
-    onError: () => {
-      toast({
-        variant: "destructive",
-        title: "Something went wrong",
-        description: "There was a problem with your request.",
-      });
-    },
-  });
+  const generateTempId = React.useCallback(() => {
+    tempIdCounter.current += 1;
+    if (
+      typeof crypto !== "undefined" &&
+      typeof crypto.randomUUID === "function"
+    ) {
+      return `temp-${crypto.randomUUID()}`;
+    }
 
-  const { data: existingTags, isLoading: isExistingTagsLoading } =
-    api.tags.list.useQuery();
+    return `temp-${Date.now()}-${tempIdCounter.current}`;
+  }, []);
+
+  React.useEffect(() => {
+    // When allowCreation is false, only sync on initial load
+    // After that, rely on optimistic updates to avoid re-ordering
+    if (!allowCreation) {
+      if (!hasInitializedRef.current && _tags.length > 0) {
+        hasInitializedRef.current = true;
+        setOptimisticTags(_tags);
+      }
+      return;
+    }
+
+    // For allowCreation mode, sync server state with optimistic state
+    setOptimisticTags((prev) => {
+      // Start with a copy to avoid mutating the previous state
+      const results = [...prev];
+      let changed = false;
+
+      for (const tag of _tags) {
+        const idx = results.findIndex((t) => t.name === tag.name);
+        if (idx == -1) {
+          results.push(tag);
+          changed = true;
+          continue;
+        }
+        if (results[idx].id.startsWith("temp-")) {
+          results[idx] = tag;
+          changed = true;
+          continue;
+        }
+      }
+
+      return changed ? results : prev;
+    });
+  }, [_tags, allowCreation]);
+
+  const { data: filteredOptions, isLoading: isExistingTagsLoading } = useQuery(
+    api.tags.list.queryOptions(
+      {
+        nameContains: inputValue,
+        limit: 50,
+        sortBy: inputValue.length > 0 ? "relevance" : "usage",
+      },
+      {
+        select: (data) =>
+          data.tags.map((t) => ({
+            id: t.id,
+            name: t.name,
+            attachedBy:
+              (t.numBookmarksByAttachedType.human ?? 0) > 0
+                ? ("human" as const)
+                : ("ai" as const),
+          })),
+        placeholderData: keepPreviousData,
+        // A finite gcTime on the server schedules a timer that pins the
+        // request's query cache in memory; keep the default (Infinity) there.
+        gcTime: isServer
+          ? Infinity
+          : inputValue.length > 0
+            ? 60_000
+            : 3_600_000,
+      },
+    ),
+  );
+
+  const selectedValues = optimisticTags.map((tag) => tag.id);
+
+  // Add "create new" option if input doesn't match any existing option
+  const trimmedInputValue = inputValue.trim();
+
+  interface DisplayOption {
+    id: string;
+    name: string;
+    label: string;
+    attachedBy: "human" | "ai";
+    isCreateOption?: boolean;
+  }
+
+  const displayedOptions = React.useMemo<DisplayOption[]>(() => {
+    if (!filteredOptions) return [];
+
+    const baseOptions = filteredOptions.map((option) => ({
+      ...option,
+      label: option.name,
+    }));
+
+    if (!trimmedInputValue) {
+      return baseOptions;
+    }
+
+    const exactMatch = baseOptions.some(
+      (opt) => opt.name.toLowerCase() === trimmedInputValue.toLowerCase(),
+    );
+
+    if (!exactMatch && allowCreation) {
+      return [
+        {
+          id: "create-new",
+          name: trimmedInputValue,
+          label: `Create "${trimmedInputValue}"`,
+          attachedBy: "human" as const,
+          isCreateOption: true,
+        },
+        ...baseOptions,
+      ];
+    }
+
+    return baseOptions;
+  }, [filteredOptions, trimmedInputValue, allowCreation]);
 
   const onChange = (
-    _option: readonly EditableTag[],
-    actionMeta: ActionMeta<EditableTag>,
+    actionMeta:
+      | { action: "create-option"; name: string }
+      | { action: "select-option"; id: string; name: string }
+      | {
+          action: "remove-value";
+          id: string;
+          name: string;
+        },
   ) => {
     switch (actionMeta.action) {
       case "remove-value": {
-        if (actionMeta.removedValue.value) {
-          mutate({
-            bookmarkId: bookmark.id,
-            attach: [],
-            detach: [{ tagId: actionMeta.removedValue.value }],
-          });
-        }
-        break;
-      }
-      case "create-option": {
-        mutate({
-          bookmarkId: bookmark.id,
-          attach: [{ tagName: actionMeta.option.label }],
-          detach: [],
+        setOptimisticTags((prev) => prev.filter((t) => t.id != actionMeta.id));
+        onDetach({
+          tagId: actionMeta.id,
+          tagName: actionMeta.name,
         });
         break;
       }
+      case "create-option": {
+        const tempId = generateTempId();
+        setOptimisticTags((prev) => [
+          ...prev,
+          {
+            id: tempId,
+            name: actionMeta.name,
+            attachedBy: "human" as const,
+          },
+        ]);
+        onAttach({ tagName: actionMeta.name });
+        break;
+      }
       case "select-option": {
-        if (actionMeta.option) {
-          mutate({
-            bookmarkId: bookmark.id,
-            attach: [
-              {
-                tagName: actionMeta.option.label,
-                tagId: actionMeta.option?.value,
-              },
-            ],
-            detach: [],
-          });
-        }
+        setOptimisticTags((prev) => {
+          if (prev.some((tag) => tag.id === actionMeta.id)) {
+            return prev;
+          }
+
+          return [
+            ...prev,
+            {
+              id: actionMeta.id,
+              name: actionMeta.name,
+              attachedBy: "human" as const,
+            },
+          ];
+        });
+        onAttach({
+          tagName: actionMeta.name,
+          tagId: actionMeta.id,
+        });
         break;
       }
     }
   };
 
+  const createTag = () => {
+    if (!inputValue.trim()) return;
+    onChange({ action: "create-option", name: inputValue.trim() });
+    setInputValue("");
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Escape") {
+      setOpen(false);
+    } else if (
+      e.key === "Backspace" &&
+      !inputValue &&
+      optimisticTags.length > 0
+    ) {
+      const lastTag = optimisticTags.slice(-1)[0];
+      onChange({
+        action: "remove-value",
+        id: lastTag.id,
+        name: lastTag.name,
+      });
+    }
+  };
+
+  const handleSelect = (option: DisplayOption) => {
+    if (option.isCreateOption) {
+      onChange({ action: "create-option", name: option.name });
+      setInputValue("");
+      inputRef.current?.focus();
+      return;
+    }
+
+    // If already selected, remove it
+    if (selectedValues.includes(option.id)) {
+      onChange({
+        action: "remove-value",
+        id: option.id,
+        name: option.name,
+      });
+    } else {
+      // Add the new tag
+      onChange({
+        action: "select-option",
+        id: option.id,
+        name: option.name,
+      });
+    }
+
+    // Reset input and keep focus
+    setInputValue("");
+    inputRef.current?.focus();
+  };
+
+  const handleOpenChange = (open: boolean) => {
+    setOpen(open);
+    if (open) {
+      // Focus the input
+      setTimeout(() => {
+        inputRef.current?.focus();
+      }, 0);
+    }
+  };
+
+  const inputPlaceholder =
+    placeholder ??
+    (allowCreation
+      ? t("tags.search_or_create_placeholder", {
+          defaultValue: "Search or create tags...",
+        })
+      : t("tags.search_placeholder", {
+          defaultValue: "Search tags...",
+        }));
+  const visiblePlaceholder =
+    optimisticTags.length === 0 ? inputPlaceholder : undefined;
+  const inputWidth = Math.max(
+    inputValue.length > 0
+      ? inputValue.length
+      : Math.min(visiblePlaceholder?.length ?? 1, 24),
+    1,
+  );
+
   return (
-    <CreateableSelect
-      isDisabled={demoMode}
-      onChange={onChange}
-      options={
-        existingTags?.tags.map((t) => ({
-          label: t.name,
-          value: t.id,
-          attachedBy: "human" as const,
-        })) ?? []
-      }
-      value={bookmark.tags.map((t) => ({
-        label: t.name,
-        value: t.id,
-        attachedBy: t.attachedBy,
-      }))}
-      isMulti
-      closeMenuOnSelect={false}
-      isClearable={false}
-      isLoading={isExistingTagsLoading}
-      theme={(theme) => ({
-        ...theme,
-        // This color scheme doesn't support disabled options.
-        colors: {
-          ...theme.colors,
-          primary: "hsl(var(--accent))",
-          primary50: "hsl(var(--accent))",
-          primary75: "hsl(var(--accent))",
-          primary25: "hsl(var(--accent))",
-        },
-      })}
-      styles={{
-        multiValueRemove: () => ({
-          backgroundColor: "transparent",
-        }),
-        valueContainer: (styles) => ({
-          ...styles,
-          padding: "0.5rem",
-          maxHeight: "14rem",
-          overflowY: "auto",
-          scrollbarWidth: "none",
-        }),
-        control: (styles) => ({
-          ...styles,
-          backgroundColor: "hsl(var(--background))",
-          borderColor: "hsl(var(--border))",
-          ":hover": {
-            borderColor: "hsl(var(--border))",
-          },
-        }),
-      }}
-      components={{
-        MultiValueContainer: ({ children, data }) => (
-          <div
-            className={cn(
-              "flex min-h-8 space-x-1 rounded px-2",
-              (data as { attachedBy: string }).attachedBy == "ai"
-                ? "bg-gradient-to-tr from-purple-500 to-purple-400 text-white"
-                : "bg-accent",
-            )}
+    <div ref={containerRef} className="w-full">
+      <Popover open={open && !isDisabled} onOpenChange={handleOpenChange}>
+        <Command shouldFilter={false}>
+          <PopoverTrigger asChild>
+            <div
+              className={cn(
+                "relative flex min-h-10 w-full flex-wrap items-center gap-2 rounded-md border border-input bg-background px-3 py-2 text-sm transition-[color,box-shadow] focus-within:border-ring focus-within:ring-[3px] focus-within:ring-ring/50",
+                isDisabled && "cursor-not-allowed opacity-50",
+              )}
+            >
+              {optimisticTags.length > 0 && (
+                <>
+                  {optimisticTags.map((tag) => (
+                    <div
+                      key={tag.id}
+                      className={cn(
+                        "flex min-h-8 space-x-1 rounded px-2",
+                        tag.attachedBy == "ai"
+                          ? "bg-purple-500 text-white"
+                          : "bg-accent",
+                      )}
+                    >
+                      <div className="m-auto flex gap-2">
+                        {tag.attachedBy === "ai" && (
+                          <Sparkles className="m-auto size-4" />
+                        )}
+                        {tag.name}
+                        {!isDisabled && (
+                          <button
+                            type="button"
+                            className="rounded-full outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onChange({
+                                action: "remove-value",
+                                id: tag.id,
+                                name: tag.name,
+                              });
+                            }}
+                          >
+                            <X className="h-3 w-3" />
+                            <span className="sr-only">Remove {tag.name}</span>
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </>
+              )}
+              <CommandPrimitive.Input
+                ref={inputRef}
+                value={inputValue}
+                onKeyDown={handleKeyDown}
+                onValueChange={(v) => setInputValue(v)}
+                placeholder={visiblePlaceholder}
+                className="bg-transparent outline-none placeholder:text-muted-foreground"
+                style={{ width: `${inputWidth}ch` }}
+                disabled={isDisabled}
+              />
+              {isExistingTagsLoading && (
+                <div className="absolute bottom-2 right-2">
+                  <Loader2 className="h-4 w-4 animate-spin opacity-50" />
+                </div>
+              )}
+            </div>
+          </PopoverTrigger>
+          <PopoverContent
+            className="w-[--radix-popover-trigger-width] p-0"
+            align="start"
+            onWheel={(e) => e.stopPropagation()}
           >
-            {children}
-          </div>
-        ),
-        MultiValueLabel: ({ children, data }) => (
-          <div className="m-auto flex gap-2">
-            {(data as { attachedBy: string }).attachedBy == "ai" && (
-              <Sparkles className="m-auto size-4" />
-            )}
-            {children}
-          </div>
-        ),
-        DropdownIndicator: () => <span />,
-        IndicatorSeparator: () => <span />,
-      }}
-      classNames={{
-        multiValueRemove: () => "my-auto",
-        valueContainer: () => "gap-2 bg-background",
-        menuList: () => "text-sm bg-background",
-        option: () => "text-red-500",
-      }}
-    />
+            <CommandList className="max-h-64">
+              {displayedOptions.length === 0 ? (
+                <CommandEmpty>
+                  {trimmedInputValue && allowCreation ? (
+                    <div className="flex items-center justify-between px-2 py-1.5">
+                      <span>Create &quot;{trimmedInputValue}&quot;</span>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={createTag}
+                        className="h-auto p-1 has-[>svg]:px-1"
+                      >
+                        <Plus className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  ) : (
+                    "No tags found."
+                  )}
+                </CommandEmpty>
+              ) : (
+                <CommandGroup>
+                  {displayedOptions.map((option) => {
+                    const isSelected = selectedValues.includes(option.id);
+                    return (
+                      <CommandItem
+                        key={
+                          option.isCreateOption
+                            ? `create-${option.name}`
+                            : option.id
+                        }
+                        value={option.label}
+                        onSelect={() => handleSelect(option)}
+                      >
+                        <div className="flex w-full items-center gap-2">
+                          {option.isCreateOption ? (
+                            <Plus className="h-4 w-4" />
+                          ) : (
+                            <Check
+                              className={cn(
+                                "h-4 w-4",
+                                isSelected ? "opacity-100" : "opacity-0",
+                              )}
+                            />
+                          )}
+                          <span>{option.name}</span>
+                        </div>
+                      </CommandItem>
+                    );
+                  })}
+                </CommandGroup>
+              )}
+            </CommandList>
+          </PopoverContent>
+        </Command>
+      </Popover>
+    </div>
   );
 }

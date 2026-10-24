@@ -1,144 +1,126 @@
 import { TRPCError } from "@trpc/server";
-import { count, eq } from "drizzle-orm";
-import invariant from "tiny-invariant";
 import { z } from "zod";
 
-import { SqliteError } from "@hoarder/db";
-import { users } from "@hoarder/db/schema";
-import { deleteUserAssets } from "@hoarder/shared/assetdb";
-import serverConfig from "@hoarder/shared/config";
-import { zSignUpSchema } from "@hoarder/shared/types/users";
-
-import { hashPassword, validatePassword } from "../auth";
+import { addLogFields } from "@karakeep/shared-server";
+import { zAdminUserSchema } from "@karakeep/shared/types/admin";
 import {
-  adminProcedure,
-  authedProcedure,
-  publicProcedure,
+  zUpdateUserSettingsSchema,
+  zUserSettingsSchema,
+  zUserBookmarkCountsResponseSchema,
+  zUserStatsResponseSchema,
+  zWhoAmIResponseSchema,
+  zWrappedStatsResponseSchema,
+} from "@karakeep/shared/types/users";
+
+import {
+  createAdminScopedProcedure,
+  createEventLogMiddleware,
+  createScopedAuthedProcedure,
   router,
 } from "../index";
+import { User } from "../models/users";
+
+const usersProcedure = createScopedAuthedProcedure("users");
+const adminUsersProcedure = createAdminScopedProcedure("users");
 
 export const usersAppRouter = router({
-  create: publicProcedure
-    .input(zSignUpSchema)
+  list: adminUsersProcedure
     .output(
       z.object({
-        id: z.string(),
-        name: z.string(),
-        email: z.string(),
-        role: z.enum(["user", "admin"]).nullable(),
-      }),
-    )
-    .mutation(async ({ input, ctx }) => {
-      if (serverConfig.auth.disableSignups) {
-        throw new TRPCError({
-          code: "FORBIDDEN",
-          message: "Signups are disabled in server config",
-        });
-      }
-      // TODO: This is racy, but that's probably fine.
-      const [{ count: userCount }] = await ctx.db
-        .select({ count: count() })
-        .from(users);
-      try {
-        const result = await ctx.db
-          .insert(users)
-          .values({
-            name: input.name,
-            email: input.email,
-            password: await hashPassword(input.password),
-            role: userCount == 0 ? "admin" : "user",
-          })
-          .returning({
-            id: users.id,
-            name: users.name,
-            email: users.email,
-            role: users.role,
-          });
-        return result[0];
-      } catch (e) {
-        if (e instanceof SqliteError) {
-          if (e.code == "SQLITE_CONSTRAINT_UNIQUE") {
-            throw new TRPCError({
-              code: "BAD_REQUEST",
-              message: "Email is already taken",
-            });
-          }
-        }
-        throw new TRPCError({
-          code: "INTERNAL_SERVER_ERROR",
-          message: "Something went wrong",
-        });
-      }
-    }),
-  list: adminProcedure
-    .output(
-      z.object({
-        users: z.array(
-          z.object({
-            id: z.string(),
-            name: z.string(),
-            email: z.string(),
-            role: z.enum(["user", "admin"]).nullable(),
-          }),
-        ),
+        users: z.array(zAdminUserSchema),
       }),
     )
     .query(async ({ ctx }) => {
-      const users = await ctx.db.query.users.findMany({
-        columns: {
-          id: true,
-          name: true,
-          email: true,
-          role: true,
-        },
-      });
-      return { users };
+      const users = await User.getAll(ctx);
+      return {
+        users: users.map((u) => u.user),
+      };
     }),
-  changePassword: authedProcedure
-    .input(
-      z.object({
-        currentPassword: z.string(),
-        newPassword: z.string(),
-      }),
-    )
-    .mutation(async ({ input, ctx }) => {
-      invariant(ctx.user.email, "A user always has an email specified");
-      let user;
-      try {
-        user = await validatePassword(ctx.user.email, input.currentPassword);
-      } catch (e) {
-        throw new TRPCError({ code: "UNAUTHORIZED" });
-      }
-      invariant(user.id, ctx.user.id);
-      await ctx.db
-        .update(users)
-        .set({
-          password: await hashPassword(input.newPassword),
-        })
-        .where(eq(users.id, ctx.user.id));
-    }),
-  delete: adminProcedure
+  delete: adminUsersProcedure
+    .use(createEventLogMiddleware("user.delete"))
     .input(
       z.object({
         userId: z.string(),
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      const res = await ctx.db.delete(users).where(eq(users.id, input.userId));
-      if (res.changes == 0) {
-        throw new TRPCError({ code: "NOT_FOUND" });
+      if (ctx.user.id == input.userId) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Cannot delete own account as an admin",
+        });
       }
-      await deleteUserAssets({ userId: input.userId });
+      addLogFields<"user.delete">({
+        "user.deleted_id": input.userId,
+        "user.deleted_by": "admin",
+      });
+      await User.deleteAsAdmin(ctx, input.userId);
     }),
-  whoami: authedProcedure
-    .output(
+  deleteAccount: usersProcedure
+    .use(createEventLogMiddleware("user.delete"))
+    .input(
       z.object({
-        id: z.string(),
-        name: z.string().nullish(),
-        email: z.string().nullish(),
+        password: z.string().optional(),
       }),
     )
-    .query(({ ctx }) => {
-      return { id: ctx.user.id, name: ctx.user.name, email: ctx.user.email };
+    .mutation(async ({ input, ctx }) => {
+      addLogFields<"user.delete">({
+        "user.deleted_id": ctx.user.id,
+        "user.deleted_by": "self",
+      });
+      const user = await User.fromCtx(ctx);
+      await user.deleteAccount(input.password);
+    }),
+  whoami: usersProcedure
+    .output(zWhoAmIResponseSchema)
+    .query(async ({ ctx }) => {
+      const user = await User.fromCtx(ctx);
+      return await user.asWhoAmI();
+    }),
+  bookmarkCounts: usersProcedure
+    .output(zUserBookmarkCountsResponseSchema)
+    .query(async ({ ctx }) => {
+      const user = await User.fromCtx(ctx);
+      return await user.getBookmarkCounts();
+    }),
+  stats: usersProcedure
+    .output(zUserStatsResponseSchema)
+    .query(async ({ ctx }) => {
+      const user = await User.fromCtx(ctx);
+      return await user.getStats();
+    }),
+  wrapped: usersProcedure.output(zWrappedStatsResponseSchema).query(() => {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "This endpoint is currently disabled",
+    });
+  }),
+  hasWrapped: usersProcedure.output(z.boolean()).query(() => {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "This endpoint is currently disabled",
+    });
+  }),
+  settings: usersProcedure
+    .output(zUserSettingsSchema)
+    .query(async ({ ctx }) => {
+      const user = await User.fromCtx(ctx);
+      return await user.getSettings();
+    }),
+  updateSettings: usersProcedure
+    .input(zUpdateUserSettingsSchema)
+    .mutation(async ({ input, ctx }) => {
+      const user = await User.fromCtx(ctx);
+      await user.updateSettings(input);
+    }),
+  updateAvatar: usersProcedure
+    .input(
+      z.object({
+        assetId: z.string().nullable(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const user = await User.fromCtx(ctx);
+      await user.updateAvatar(input.assetId);
     }),
 });

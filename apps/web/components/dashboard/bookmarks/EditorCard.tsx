@@ -1,43 +1,44 @@
 import type { SubmitErrorHandler, SubmitHandler } from "react-hook-form";
-import { useEffect, useImperativeHandle, useRef } from "react";
-import Link from "next/link";
+import React, { useImperativeHandle, useRef } from "react";
 import { ActionButton } from "@/components/ui/action-button";
 import { Form, FormControl, FormItem } from "@/components/ui/form";
-import InfoTooltip from "@/components/ui/info-tooltip";
+import { Kbd } from "@/components/ui/kbd";
+import MultipleChoiceDialog from "@/components/ui/multiple-choice-dialog";
 import { Separator } from "@/components/ui/separator";
+import { toast } from "@/components/ui/sonner";
 import { Textarea } from "@/components/ui/textarea";
-import { toast } from "@/components/ui/use-toast";
+import BookmarkSavedToast from "@/components/utils/BookmarkSavedToast";
 import { useClientConfig } from "@/lib/clientConfig";
-import { useBookmarkLayoutSwitch } from "@/lib/userLocalSettings/bookmarksLayout";
-import { cn } from "@/lib/utils";
+import { useTranslation } from "@/lib/i18n/client";
+import {
+  useBookmarkLayout,
+  useBookmarkLayoutSwitch,
+} from "@/lib/userLocalSettings/bookmarksLayout";
+import { cn, getOS } from "@/lib/utils";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { ExternalLink } from "lucide-react";
 import { useForm } from "react-hook-form";
+import { useHotkeys } from "react-hotkeys-hook";
 import { z } from "zod";
 
-import { useCreateBookmarkWithPostHook } from "@hoarder/shared-react/hooks/bookmarks";
+import { useCreateBookmarkWithPostHook } from "@karakeep/shared-react/hooks/bookmarks";
+import { BookmarkTypes } from "@karakeep/shared/types/bookmarks";
 
-function useFocusOnKeyPress(inputRef: React.RefObject<HTMLTextAreaElement>) {
-  useEffect(() => {
-    function handleKeyPress(e: KeyboardEvent) {
-      if (!inputRef.current) {
-        return;
-      }
-      if ((e.metaKey || e.ctrlKey) && e.code === "KeyE") {
-        inputRef.current.focus();
-      }
-    }
-    document.addEventListener("keydown", handleKeyPress);
-    return () => {
-      document.removeEventListener("keydown", handleKeyPress);
-    };
-  }, [inputRef]);
+import { useUploadAsset } from "../UploadDropzone";
+
+interface MultiUrlImportState {
+  urls: URL[];
+  text: string;
 }
 
 export default function EditorCard({ className }: { className?: string }) {
+  const { t } = useTranslation();
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
+  const [multiUrlImportState, setMultiUrlImportState] =
+    React.useState<MultiUrlImportState | null>(null);
+
   const demoMode = !!useClientConfig().demoMode;
+  const bookmarkLayout = useBookmarkLayout();
   const formSchema = z.object({
     text: z.string(),
   });
@@ -49,46 +50,78 @@ export default function EditorCard({ className }: { className?: string }) {
   });
   const { ref, ...textFieldProps } = form.register("text");
   useImperativeHandle(ref, () => inputRef.current);
-  useFocusOnKeyPress(inputRef);
+  useHotkeys("mod+e", () => {
+    inputRef.current?.focus();
+  });
 
   const { mutate, isPending } = useCreateBookmarkWithPostHook({
     onSuccess: (resp) => {
       if (resp.alreadyExists) {
         toast({
-          description: (
-            <div className="flex items-center gap-1">
-              Bookmark already exists.
-              <Link
-                className="flex underline-offset-4 hover:underline"
-                href={`/dashboard/preview/${resp.id}`}
-              >
-                Open <ExternalLink className="ml-1 size-4" />
-              </Link>
-            </div>
-          ),
+          description: <BookmarkSavedToast bookmarkId={resp.id} />,
           variant: "default",
         });
       }
       form.reset();
+      // if the list layout is used, we reset the size of the editor card to the original size after submitting
+      if (bookmarkLayout === "list" && inputRef?.current?.style) {
+        inputRef.current.style.height = "auto";
+      }
     },
-    onError: () => {
-      toast({ description: "Something went wrong", variant: "destructive" });
+    onError: (e) => {
+      toast({ description: e.message, variant: "destructive" });
     },
   });
 
-  const onSubmit: SubmitHandler<z.infer<typeof formSchema>> = (data) => {
-    const text = data.text.trim();
-    try {
-      const url = new URL(text);
+  const uploadAsset = useUploadAsset();
+
+  function tryToImportUrls(text: string): void {
+    const lines = text.split("\n");
+    const urls: URL[] = [];
+    for (const line of lines) {
+      // parsing can also throw an exception, but will be caught outside
+      const url = new URL(line);
       if (url.protocol != "http:" && url.protocol != "https:") {
         throw new Error("Invalid URL");
       }
-      mutate({ type: "link", url: text });
-    } catch (e) {
-      // Not a URL
-      mutate({ type: "text", text });
+      urls.push(url);
+    }
+
+    if (urls.length === 1) {
+      // Only 1 url in the textfield --> simply import it
+      mutate({ type: BookmarkTypes.LINK, url: text });
+      return;
+    }
+    // multiple urls found --> ask the user if it should be imported as multiple URLs or as a text bookmark
+    setMultiUrlImportState({ urls, text });
+  }
+
+  const onInput = (e: React.FormEvent<HTMLTextAreaElement>) => {
+    // Expand the textarea to a max of half the screen size in the list layout only
+    if (bookmarkLayout === "list") {
+      const target = e.target as HTMLTextAreaElement;
+      const maxHeight = window.innerHeight * 0.5;
+      target.style.height = "auto";
+
+      if (target.scrollHeight <= maxHeight) {
+        target.style.height = `${target.scrollHeight}px`;
+      } else {
+        target.style.height = `${maxHeight}px`;
+      }
     }
   };
+
+  const onSubmit: SubmitHandler<z.infer<typeof formSchema>> = (data) => {
+    const text = data.text.trim();
+    if (!text.length) return;
+    try {
+      tryToImportUrls(text);
+    } catch {
+      // Not a URL
+      mutate({ type: BookmarkTypes.TEXT, text });
+    }
+  };
+
   const onError: SubmitErrorHandler<z.infer<typeof formSchema>> = (errors) => {
     toast({
       description: Object.values(errors)
@@ -99,27 +132,72 @@ export default function EditorCard({ className }: { className?: string }) {
   };
   const cardHeight = useBookmarkLayoutSwitch({
     grid: "h-96",
-    masonry: "h-96",
+    masonry: "h-48",
     list: undefined,
+    compact: undefined,
   });
+
+  const handlePaste = async (
+    event: React.ClipboardEvent<HTMLTextAreaElement>,
+  ) => {
+    if (event?.clipboardData?.items) {
+      await Promise.all(
+        Array.from(event.clipboardData.items)
+          .filter((item) => item?.type?.startsWith("image"))
+          .map((item) => {
+            const blob = item.getAsFile();
+            if (blob) {
+              return uploadAsset(blob);
+            }
+          }),
+      );
+    }
+  };
+
+  /**
+   * Methods that triggers when "enter" is pressed (without ctrl)
+   * It checks if the current line is a todo
+   * if it is it automatically appends a todo a the start of the new line
+   */
+  const handleNewTodo = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    const todoMarkup = "- [ ] ";
+    const textarea = inputRef.current;
+    if (!textarea) return;
+    const start = textarea.selectionStart;
+    const end = textarea.selectionEnd;
+    const textBefore = textarea.value.slice(0, start);
+    const lines = textBefore.split("\n");
+    const currentLine = lines[lines.length - 1];
+    const currentLineIsTodo = currentLine.startsWith(todoMarkup);
+    if (!currentLineIsTodo) return;
+    e.preventDefault();
+    const newValue =
+      textarea.value.slice(0, start) +
+      "\n" +
+      todoMarkup +
+      textarea.value.slice(end);
+    form.setValue("text", newValue, { shouldDirty: true, shouldTouch: true });
+    textarea.value = newValue;
+    textarea.selectionStart = start + todoMarkup.length + 1;
+    textarea.selectionEnd = start + todoMarkup.length + 1;
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+  };
+
+  const OS = getOS();
 
   return (
     <Form {...form}>
       <form
         className={cn(
           className,
-          "flex flex-col gap-2 rounded-xl bg-card p-4",
+          "relative flex flex-col gap-2 rounded-xl bg-card p-4",
           cardHeight,
         )}
         onSubmit={form.handleSubmit(onSubmit, onError)}
       >
         <div className="flex justify-between">
-          <p className="text-sm">NEW ITEM</p>
-          <InfoTooltip size={15}>
-            <p className="text-center">
-              You can quickly focus on this field by pressing ⌘ + E
-            </p>
-          </InfoTooltip>
+          <p className="text-sm">{t("editor.new_item")}</p>
+          <Kbd>⌘ + E</Kbd>
         </div>
         <Separator />
         <FormItem className="flex-1">
@@ -127,29 +205,94 @@ export default function EditorCard({ className }: { className?: string }) {
             <Textarea
               ref={inputRef}
               disabled={isPending}
-              className="h-full w-full resize-none border-none text-lg focus-visible:ring-0"
-              placeholder={
-                "Paste a link, write a note or drag and drop an image in here ..."
-              }
+              className={cn(
+                "h-full w-full border-none p-0 text-base font-light shadow-none focus-visible:ring-0 dark:bg-transparent md:text-base",
+                { "resize-none": bookmarkLayout !== "list" },
+              )}
+              placeholder={t("editor.placeholder_v2")}
               onKeyDown={(e) => {
                 if (demoMode) {
                   return;
+                }
+                if (
+                  e.key === "Enter" &&
+                  !(e.metaKey || e.ctrlKey || e.shiftKey)
+                ) {
+                  handleNewTodo(e);
                 }
                 if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
                   form.handleSubmit(onSubmit, onError)();
                 }
               }}
+              onPaste={(e) => {
+                if (demoMode) {
+                  return;
+                }
+                handlePaste(e);
+              }}
+              onInput={onInput}
               {...textFieldProps}
             />
           </FormControl>
         </FormItem>
-        <ActionButton loading={isPending} type="submit" variant="default">
+        <ActionButton
+          disabled={!form.formState.dirtyFields.text}
+          loading={isPending}
+          type="submit"
+          variant="secondary"
+        >
           {form.formState.dirtyFields.text
             ? demoMode
-              ? "Submissions are disabled"
-              : "Press ⌘ + Enter to Save"
-            : "Save"}
+              ? t("editor.disabled_submissions")
+              : `${t("actions.save")} (${OS === "macos" ? "⌘" : "Ctrl"} + Enter)`
+            : t("actions.save")}
         </ActionButton>
+
+        {multiUrlImportState && (
+          <MultipleChoiceDialog
+            open={true}
+            title={t("editor.multiple_urls_dialog_title")}
+            description={t("editor.multiple_urls_dialog_desc")}
+            onOpenChange={(open) => {
+              if (!open) {
+                setMultiUrlImportState(null);
+              }
+            }}
+            actionButtons={[
+              () => (
+                <ActionButton
+                  type="button"
+                  variant="secondary"
+                  loading={isPending}
+                  onClick={() => {
+                    mutate({
+                      type: BookmarkTypes.TEXT,
+                      text: multiUrlImportState.text,
+                    });
+                    setMultiUrlImportState(null);
+                  }}
+                >
+                  {t("editor.import_as_text")}
+                </ActionButton>
+              ),
+              () => (
+                <ActionButton
+                  type="button"
+                  variant="destructive"
+                  loading={isPending}
+                  onClick={() => {
+                    multiUrlImportState.urls.forEach((url) =>
+                      mutate({ type: BookmarkTypes.LINK, url: url.toString() }),
+                    );
+                    setMultiUrlImportState(null);
+                  }}
+                >
+                  {t("editor.import_as_separate_bookmarks")}
+                </ActionButton>
+              ),
+            ]}
+          ></MultipleChoiceDialog>
+        )}
       </form>
     </Form>
   );

@@ -1,229 +1,182 @@
-import assert from "node:assert";
-import { experimental_trpcMiddleware, TRPCError } from "@trpc/server";
-import { and, eq } from "drizzle-orm";
+import { experimental_trpcMiddleware } from "@trpc/server";
 import { z } from "zod";
 
-import { SqliteError } from "@hoarder/db";
-import { bookmarkLists, bookmarksInLists } from "@hoarder/db/schema";
-import { zBookmarkListSchema } from "@hoarder/shared/types/lists";
+import {
+  zBookmarkListSchema,
+  zEditBookmarkListSchemaWithValidation,
+  zMergeListSchema,
+  zNewBookmarkListSchema,
+} from "@karakeep/shared/types/lists";
 
-import type { Context } from "../index";
-import { authedProcedure, router } from "../index";
+import { addLogFields, logEvent } from "@karakeep/shared-server";
+
+import type { AuthedContext } from "../index";
+import {
+  createEventLogMiddleware,
+  createRateLimitMiddleware,
+  createScopedAuthedProcedure,
+  router,
+} from "../index";
+import { ListInvitation } from "../models/listInvitations";
+import { List } from "../models/lists";
 import { ensureBookmarkOwnership } from "./bookmarks";
 
-const zNewBookmarkListSchema = z.object({
-  name: z
-    .string()
-    .min(1, "List name can't be empty")
-    .max(20, "List name is at most 20 chars"),
-  icon: z.string(),
-  parentId: z.string().nullish(),
-});
+const listsProcedure = createScopedAuthedProcedure("lists");
 
-export const ensureListOwnership = experimental_trpcMiddleware<{
-  ctx: Context;
+export const ensureListAtLeastViewer = experimental_trpcMiddleware<{
+  ctx: AuthedContext;
   input: { listId: string };
 }>().create(async (opts) => {
-  const list = await opts.ctx.db.query.bookmarkLists.findFirst({
-    where: eq(bookmarkLists.id, opts.input.listId),
-    columns: {
-      userId: true,
+  // This would throw if the user can't view the list
+  const list = await List.fromId(opts.ctx, opts.input.listId);
+  return opts.next({
+    ctx: {
+      ...opts.ctx,
+      list,
     },
   });
-  if (!opts.ctx.user) {
-    throw new TRPCError({
-      code: "UNAUTHORIZED",
-      message: "User is not authorized",
-    });
-  }
-  if (!list) {
-    throw new TRPCError({
-      code: "NOT_FOUND",
-      message: "List not found",
-    });
-  }
-  if (list.userId != opts.ctx.user.id) {
-    throw new TRPCError({
-      code: "FORBIDDEN",
-      message: "User is not allowed to access resource",
-    });
-  }
+});
 
-  return opts.next();
+export const ensureListAtLeastEditor = experimental_trpcMiddleware<{
+  ctx: AuthedContext & { list: List };
+  input: { listId: string };
+}>().create(async (opts) => {
+  opts.ctx.list.ensureCanEdit();
+  return opts.next({
+    ctx: opts.ctx,
+  });
+});
+
+export const ensureListAtLeastOwner = experimental_trpcMiddleware<{
+  ctx: AuthedContext & { list: List };
+  input: { listId: string };
+}>().create(async (opts) => {
+  opts.ctx.list.ensureCanManage();
+  return opts.next({
+    ctx: opts.ctx,
+  });
+});
+
+export const ensureInvitationAccess = experimental_trpcMiddleware<{
+  ctx: AuthedContext;
+  input: { invitationId: string };
+}>().create(async (opts) => {
+  const invitation = await ListInvitation.fromId(
+    opts.ctx,
+    opts.input.invitationId,
+  );
+  return opts.next({
+    ctx: {
+      ...opts.ctx,
+      invitation,
+    },
+  });
 });
 
 export const listsAppRouter = router({
-  create: authedProcedure
+  create: listsProcedure
+    .use(createEventLogMiddleware("list.create"))
     .input(zNewBookmarkListSchema)
     .output(zBookmarkListSchema)
     .mutation(async ({ input, ctx }) => {
-      const [result] = await ctx.db
-        .insert(bookmarkLists)
-        .values({
-          name: input.name,
-          icon: input.icon,
-          userId: ctx.user.id,
-          parentId: input.parentId,
-        })
-        .returning();
-      return result;
+      const list = await List.create(ctx, input);
+      addLogFields<"list.create">({ "list.id": list.id });
+      return list.asZBookmarkList();
     }),
-  edit: authedProcedure
+  edit: listsProcedure
+    .input(zEditBookmarkListSchemaWithValidation)
+    .output(zBookmarkListSchema)
+    .use(ensureListAtLeastViewer)
+    .use(ensureListAtLeastOwner)
+    .mutation(async ({ input, ctx }) => {
+      await ctx.list.update(input);
+      if (input.public !== undefined) {
+        logEvent({
+          "event.name": "list.share",
+          "user.id": ctx.user.id,
+          "list.id": input.listId,
+          "list.public": input.public,
+        });
+      }
+      return ctx.list.asZBookmarkList();
+    }),
+  merge: listsProcedure
+    .input(zMergeListSchema)
+    .mutation(async ({ input, ctx }) => {
+      const [sourceList, targetList] = await Promise.all([
+        List.fromId(ctx, input.sourceId),
+        List.fromId(ctx, input.targetId),
+      ]);
+      sourceList.ensureCanManage();
+      targetList.ensureCanManage();
+      return await sourceList.mergeInto(
+        targetList,
+        input.deleteSourceAfterMerge,
+      );
+    }),
+  delete: listsProcedure
     .input(
-      zNewBookmarkListSchema
-        .partial()
-        .merge(z.object({ listId: z.string() }))
-        .refine((val) => val.parentId != val.listId, {
-          message: "List can't be its own parent",
-          path: ["parentId"],
-        }),
+      z.object({
+        listId: z.string(),
+        deleteChildren: z.boolean().optional().default(false),
+      }),
+    )
+    .use(ensureListAtLeastViewer)
+    .use(ensureListAtLeastOwner)
+    .mutation(async ({ ctx, input }) => {
+      if (input.deleteChildren) {
+        const children = await ctx.list.getChildren();
+        await Promise.all(children.map((l) => l.delete()));
+      }
+      await ctx.list.delete();
+    }),
+  addToList: listsProcedure
+    .input(
+      z.object({
+        listId: z.string(),
+        bookmarkId: z.string(),
+      }),
+    )
+    .use(ensureListAtLeastViewer)
+    .use(ensureListAtLeastEditor)
+    .use(ensureBookmarkOwnership)
+    .mutation(async ({ input, ctx }) => {
+      await ctx.list.addBookmark(input.bookmarkId);
+    }),
+  removeFromList: listsProcedure
+    .input(
+      z.object({
+        listId: z.string(),
+        bookmarkId: z.string(),
+      }),
+    )
+    .use(ensureListAtLeastViewer)
+    .use(ensureListAtLeastEditor)
+    .mutation(async ({ input, ctx }) => {
+      await ctx.list.removeBookmark(input.bookmarkId);
+    }),
+  get: listsProcedure
+    .input(
+      z.object({
+        listId: z.string(),
+      }),
     )
     .output(zBookmarkListSchema)
-    .mutation(async ({ input, ctx }) => {
-      const result = await ctx.db
-        .update(bookmarkLists)
-        .set({
-          name: input.name,
-          icon: input.icon,
-          parentId: input.parentId,
-        })
-        .where(
-          and(
-            eq(bookmarkLists.id, input.listId),
-            eq(bookmarkLists.userId, ctx.user.id),
-          ),
-        )
-        .returning();
-      if (result.length == 0) {
-        throw new TRPCError({ code: "NOT_FOUND" });
-      }
-      return result[0];
+    .use(ensureListAtLeastViewer)
+    .query(async ({ ctx }) => {
+      return ctx.list.asZBookmarkList();
     }),
-  delete: authedProcedure
-    .input(
-      z.object({
-        listId: z.string(),
-      }),
-    )
-    .use(ensureListOwnership)
-    .mutation(async ({ input, ctx }) => {
-      const res = await ctx.db
-        .delete(bookmarkLists)
-        .where(
-          and(
-            eq(bookmarkLists.id, input.listId),
-            eq(bookmarkLists.userId, ctx.user.id),
-          ),
-        );
-      if (res.changes == 0) {
-        throw new TRPCError({ code: "NOT_FOUND" });
-      }
-    }),
-  addToList: authedProcedure
-    .input(
-      z.object({
-        listId: z.string(),
-        bookmarkId: z.string(),
-      }),
-    )
-    .use(ensureListOwnership)
-    .use(ensureBookmarkOwnership)
-    .mutation(async ({ input, ctx }) => {
-      try {
-        await ctx.db.insert(bookmarksInLists).values({
-          listId: input.listId,
-          bookmarkId: input.bookmarkId,
-        });
-      } catch (e) {
-        if (e instanceof SqliteError) {
-          if (e.code == "SQLITE_CONSTRAINT_PRIMARYKEY") {
-            throw new TRPCError({
-              code: "BAD_REQUEST",
-              message: `Bookmark ${input.bookmarkId} is already in the list ${input.listId}`,
-            });
-          }
-        }
-        throw new TRPCError({
-          code: "INTERNAL_SERVER_ERROR",
-          message: "Something went wrong",
-        });
-      }
-    }),
-  removeFromList: authedProcedure
-    .input(
-      z.object({
-        listId: z.string(),
-        bookmarkId: z.string(),
-      }),
-    )
-    .use(ensureListOwnership)
-    .use(ensureBookmarkOwnership)
-    .mutation(async ({ input, ctx }) => {
-      const deleted = await ctx.db
-        .delete(bookmarksInLists)
-        .where(
-          and(
-            eq(bookmarksInLists.listId, input.listId),
-            eq(bookmarksInLists.bookmarkId, input.bookmarkId),
-          ),
-        );
-      if (deleted.changes == 0) {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: `Bookmark ${input.bookmarkId} is already not in list ${input.listId}`,
-        });
-      }
-    }),
-  get: authedProcedure
-    .input(
-      z.object({
-        listId: z.string(),
-      }),
-    )
-    .output(
-      zBookmarkListSchema.merge(
-        z.object({
-          bookmarks: z.array(z.string()),
-        }),
-      ),
-    )
-    .use(ensureListOwnership)
-    .query(async ({ input, ctx }) => {
-      const res = await ctx.db.query.bookmarkLists.findFirst({
-        where: and(
-          eq(bookmarkLists.id, input.listId),
-          eq(bookmarkLists.userId, ctx.user.id),
-        ),
-        with: {
-          bookmarksInLists: true,
-        },
-      });
-      if (!res) {
-        throw new TRPCError({ code: "NOT_FOUND" });
-      }
-
-      return {
-        id: res.id,
-        name: res.name,
-        icon: res.icon,
-        parentId: res.parentId,
-        bookmarks: res.bookmarksInLists.map((b) => b.bookmarkId),
-      };
-    }),
-  list: authedProcedure
+  list: listsProcedure
     .output(
       z.object({
         lists: z.array(zBookmarkListSchema),
       }),
     )
     .query(async ({ ctx }) => {
-      const lists = await ctx.db.query.bookmarkLists.findMany({
-        where: and(eq(bookmarkLists.userId, ctx.user.id)),
-      });
-
-      return { lists };
+      const results = await List.getAll(ctx);
+      return { lists: results.map((l) => l.asZBookmarkList()) };
     }),
-  getListsOfBookmark: authedProcedure
+  getListsOfBookmark: listsProcedure
     .input(z.object({ bookmarkId: z.string() }))
     .output(
       z.object({
@@ -232,14 +185,230 @@ export const listsAppRouter = router({
     )
     .use(ensureBookmarkOwnership)
     .query(async ({ input, ctx }) => {
-      const lists = await ctx.db.query.bookmarksInLists.findMany({
-        where: and(eq(bookmarksInLists.bookmarkId, input.bookmarkId)),
-        with: {
-          list: true,
-        },
-      });
-      assert(lists.map((l) => l.list.userId).every((id) => id == ctx.user.id));
+      const lists = await List.forBookmark(ctx, input.bookmarkId);
+      return { lists: lists.map((l) => l.asZBookmarkList()) };
+    }),
+  stats: listsProcedure
+    .output(
+      z.object({
+        stats: z.map(z.string(), z.number()),
+      }),
+    )
+    .query(async ({ ctx }) => {
+      const lists = await List.getAll(ctx);
+      return { stats: await List.getSizes(ctx, lists) };
+    }),
 
-      return { lists: lists.map((l) => l.list) };
+  // Rss endpoints
+  regenRssToken: listsProcedure
+    .input(
+      z.object({
+        listId: z.string(),
+      }),
+    )
+    .output(
+      z.object({
+        token: z.string(),
+      }),
+    )
+    .use(ensureListAtLeastViewer)
+    .use(ensureListAtLeastOwner)
+    .mutation(async ({ ctx }) => {
+      const token = await ctx.list.regenRssToken();
+      return { token: token! };
+    }),
+  clearRssToken: listsProcedure
+    .input(
+      z.object({
+        listId: z.string(),
+      }),
+    )
+    .use(ensureListAtLeastViewer)
+    .use(ensureListAtLeastOwner)
+    .mutation(async ({ ctx }) => {
+      await ctx.list.clearRssToken();
+    }),
+  getRssToken: listsProcedure
+    .input(
+      z.object({
+        listId: z.string(),
+      }),
+    )
+    .output(
+      z.object({
+        token: z.string().nullable(),
+      }),
+    )
+    .use(ensureListAtLeastViewer)
+    .use(ensureListAtLeastOwner)
+    .query(async ({ ctx }) => {
+      return { token: await ctx.list.getRssToken() };
+    }),
+
+  // Collaboration endpoints
+  addCollaborator: listsProcedure
+    .input(
+      z.object({
+        listId: z.string(),
+        email: z.string().trim().toLowerCase().email(),
+        role: z.enum(["viewer", "editor"]),
+      }),
+    )
+    .output(
+      z.object({
+        invitationId: z.string(),
+      }),
+    )
+    .use(
+      createRateLimitMiddleware({
+        name: "lists.addCollaborator",
+        windowMs: 15 * 60 * 1000,
+        maxRequests: 20,
+      }),
+    )
+    .use(ensureListAtLeastViewer)
+    .use(ensureListAtLeastOwner)
+    .mutation(async ({ input, ctx }) => {
+      return {
+        invitationId: await ctx.list.addCollaboratorByEmail(
+          input.email,
+          input.role,
+        ),
+      };
+    }),
+  removeCollaborator: listsProcedure
+    .input(
+      z.object({
+        listId: z.string(),
+        userId: z.string(),
+      }),
+    )
+    .use(ensureListAtLeastViewer)
+    .use(ensureListAtLeastOwner)
+    .mutation(async ({ input, ctx }) => {
+      await ctx.list.removeCollaborator(input.userId);
+    }),
+  updateCollaboratorRole: listsProcedure
+    .input(
+      z.object({
+        listId: z.string(),
+        userId: z.string(),
+        role: z.enum(["viewer", "editor"]),
+      }),
+    )
+    .use(ensureListAtLeastViewer)
+    .use(ensureListAtLeastOwner)
+    .mutation(async ({ input, ctx }) => {
+      await ctx.list.updateCollaboratorRole(input.userId, input.role);
+    }),
+  getCollaborators: listsProcedure
+    .input(
+      z.object({
+        listId: z.string(),
+      }),
+    )
+    .output(
+      z.object({
+        collaborators: z.array(
+          z.object({
+            id: z.string(),
+            userId: z.string(),
+            role: z.enum(["viewer", "editor"]),
+            status: z.enum(["pending", "accepted", "declined"]),
+            addedAt: z.date(),
+            invitedAt: z.date(),
+            user: z.object({
+              id: z.string(),
+              name: z.string(),
+              email: z.string().nullable(),
+              image: z.string().nullable(),
+            }),
+          }),
+        ),
+        owner: z
+          .object({
+            id: z.string(),
+            name: z.string(),
+            email: z.string().nullable(),
+            image: z.string().nullable(),
+          })
+          .nullable(),
+      }),
+    )
+    .use(ensureListAtLeastViewer)
+    .query(async ({ ctx }) => {
+      return await ctx.list.getCollaborators();
+    }),
+
+  acceptInvitation: listsProcedure
+    .input(
+      z.object({
+        invitationId: z.string(),
+      }),
+    )
+    .use(ensureInvitationAccess)
+    .mutation(async ({ ctx }) => {
+      await ctx.invitation.accept();
+    }),
+
+  declineInvitation: listsProcedure
+    .input(
+      z.object({
+        invitationId: z.string(),
+      }),
+    )
+    .use(ensureInvitationAccess)
+    .mutation(async ({ ctx }) => {
+      await ctx.invitation.decline();
+    }),
+
+  revokeInvitation: listsProcedure
+    .input(
+      z.object({
+        invitationId: z.string(),
+      }),
+    )
+    .use(ensureInvitationAccess)
+    .mutation(async ({ ctx }) => {
+      await ctx.invitation.revoke();
+    }),
+
+  getPendingInvitations: listsProcedure
+    .output(
+      z.array(
+        z.object({
+          id: z.string(),
+          listId: z.string(),
+          role: z.enum(["viewer", "editor"]),
+          invitedAt: z.date(),
+          list: z.object({
+            id: z.string(),
+            name: z.string(),
+            icon: z.string(),
+            description: z.string().nullable(),
+            owner: z
+              .object({
+                id: z.string(),
+                name: z.string(),
+                email: z.string(),
+              })
+              .nullable(),
+          }),
+        }),
+      ),
+    )
+    .query(async ({ ctx }) => {
+      return ListInvitation.pendingForUser(ctx);
+    }),
+
+  leaveList: listsProcedure
+    .input(
+      z.object({
+        listId: z.string(),
+      }),
+    )
+    .use(ensureListAtLeastViewer)
+    .mutation(async ({ ctx }) => {
+      await ctx.list.leaveList();
     }),
 });

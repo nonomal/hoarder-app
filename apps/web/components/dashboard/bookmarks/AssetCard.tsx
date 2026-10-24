@@ -2,16 +2,15 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { api } from "@/lib/trpc";
+import { cn } from "@/lib/utils";
+import { FileText } from "lucide-react";
 
-import type {
-  ZBookmark,
-  ZBookmarkTypeAsset,
-} from "@hoarder/shared/types/bookmarks";
-import { getAssetUrl } from "@hoarder/shared-react/utils/assetUtils";
-import { isBookmarkStillTagging } from "@hoarder/shared-react/utils/bookmarkUtils";
+import type { ZBookmarkTypeAsset } from "@karakeep/shared/types/bookmarks";
+import { getAssetUrl } from "@karakeep/shared/utils/assetUtils";
+import { getSourceUrl } from "@karakeep/shared/utils/bookmarkUtils";
 
 import { BookmarkLayoutAdaptingCard } from "./BookmarkLayoutAdaptingCard";
+import FooterLinkURL from "./FooterLinkURL";
 
 function AssetImage({
   bookmark,
@@ -29,18 +28,36 @@ function AssetImage({
             alt="asset"
             src={getAssetUrl(bookmarkedAsset.assetId)}
             fill={true}
+            unoptimized
             className={className}
           />
         </Link>
       );
     }
     case "pdf": {
+      const screenshotAssetId = bookmark.assets.find(
+        (r) => r.assetType === "assetScreenshot",
+      )?.id;
+      if (!screenshotAssetId) {
+        return (
+          <div
+            className={cn(className, "flex items-center justify-center")}
+            title="PDF screenshot not available. Run asset preprocessing job to generate one screenshot"
+          >
+            <FileText size={80} />
+          </div>
+        );
+      }
       return (
-        <iframe
-          title={bookmarkedAsset.assetId}
-          className={className}
-          src={getAssetUrl(bookmarkedAsset.assetId)}
-        />
+        <Link href={`/dashboard/preview/${bookmark.id}`}>
+          <Image
+            alt="asset"
+            src={getAssetUrl(screenshotAssetId)}
+            fill={true}
+            unoptimized
+            className={className}
+          />
+        </Link>
       );
     }
     default: {
@@ -51,43 +68,25 @@ function AssetImage({
 }
 
 export default function AssetCard({
-  bookmark: initialData,
+  bookmark: bookmarkedAsset,
   className,
+  bookmarkIndex,
 }: {
-  bookmark: ZBookmark;
+  bookmark: ZBookmarkTypeAsset;
   className?: string;
+  bookmarkIndex?: number;
 }) {
-  const { data: bookmark } = api.bookmarks.getBookmark.useQuery(
-    {
-      bookmarkId: initialData.id,
-    },
-    {
-      initialData,
-      refetchInterval: (query) => {
-        const data = query.state.data;
-        if (!data) {
-          return false;
-        }
-        if (isBookmarkStillTagging(data)) {
-          return 1000;
-        }
-        return false;
-      },
-    },
-  );
-
-  if (bookmark.content.type != "asset") {
-    throw new Error("Unexpected bookmark type");
-  }
-
-  const bookmarkedAsset = { ...bookmark, content: bookmark.content };
-
   return (
     <BookmarkLayoutAdaptingCard
       title={bookmarkedAsset.title ?? bookmarkedAsset.content.fileName}
-      footer={null}
+      footer={
+        getSourceUrl(bookmarkedAsset) && (
+          <FooterLinkURL url={getSourceUrl(bookmarkedAsset)} />
+        )
+      }
       bookmark={bookmarkedAsset}
       className={className}
+      bookmarkIndex={bookmarkIndex}
       wrapTags={true}
       image={(_layout, className) => (
         <div className="relative size-full flex-1">

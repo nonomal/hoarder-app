@@ -1,18 +1,16 @@
 import { usePathname, useRouter } from "next/navigation";
 import { ActionButton } from "@/components/ui/action-button";
 import ActionConfirmingDialog from "@/components/ui/action-confirming-dialog";
-import { toast } from "@/components/ui/use-toast";
+import { toast } from "@/components/ui/sonner";
 
-import { useDeleteTag } from "@hoarder/shared-react/hooks/tags";
+import { useDeleteTag } from "@karakeep/shared-react/hooks/tags";
 
 export default function DeleteTagConfirmationDialog({
   tag,
-  children,
   open,
   setOpen,
 }: {
   tag: { id: string; name: string };
-  children?: React.ReactNode;
   open?: boolean;
   setOpen?: (v: boolean) => void;
 }) {
@@ -55,8 +53,6 @@ export default function DeleteTagConfirmationDialog({
           Delete
         </ActionButton>
       )}
-    >
-      {children}
-    </ActionConfirmingDialog>
+    />
   );
 }

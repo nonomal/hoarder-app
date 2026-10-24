@@ -1,72 +1,65 @@
 "use client";
 
-import { useState } from "react";
-import { api } from "@/lib/trpc";
+import Image from "next/image";
+import Link from "next/link";
+import { BookmarkMarkdownComponent } from "@/components/dashboard/bookmarks/BookmarkMarkdownComponent";
 import { bookmarkLayoutSwitch } from "@/lib/userLocalSettings/bookmarksLayout";
 import { cn } from "@/lib/utils";
-import Markdown from "react-markdown";
 
-import type { ZBookmark } from "@hoarder/shared/types/bookmarks";
-import { isBookmarkStillTagging } from "@hoarder/shared-react/utils/bookmarkUtils";
+import type { ZBookmarkTypeText } from "@karakeep/shared/types/bookmarks";
+import { getAssetUrl } from "@karakeep/shared/utils/assetUtils";
+import { getSourceUrl } from "@karakeep/shared/utils/bookmarkUtils";
 
-import { BookmarkedTextViewer } from "./BookmarkedTextViewer";
 import { BookmarkLayoutAdaptingCard } from "./BookmarkLayoutAdaptingCard";
+import FooterLinkURL from "./FooterLinkURL";
 
 export default function TextCard({
-  bookmark: initialData,
+  bookmark,
   className,
+  bookmarkIndex,
 }: {
-  bookmark: ZBookmark;
+  bookmark: ZBookmarkTypeText;
   className?: string;
+  bookmarkIndex?: number;
 }) {
-  const { data: bookmark } = api.bookmarks.getBookmark.useQuery(
-    {
-      bookmarkId: initialData.id,
-    },
-    {
-      initialData,
-      refetchInterval: (query) => {
-        const data = query.state.data;
-        if (!data) {
-          return false;
-        }
-        if (isBookmarkStillTagging(data)) {
-          return 1000;
-        }
-        return false;
-      },
-    },
-  );
-  const [previewModalOpen, setPreviewModalOpen] = useState(false);
-  const bookmarkedText = bookmark.content;
-  if (bookmarkedText.type != "text") {
-    throw new Error("Unexpected bookmark type");
-  }
-
+  const banner = bookmark.assets.find((a) => a.assetType == "bannerImage");
   return (
     <>
-      <BookmarkedTextViewer
-        content={bookmarkedText.text}
-        open={previewModalOpen}
-        setOpen={setPreviewModalOpen}
-      />
       <BookmarkLayoutAdaptingCard
         title={bookmark.title}
         content={
-          <Markdown className="prose dark:prose-invert">
-            {bookmarkedText.text}
-          </Markdown>
+          <BookmarkMarkdownComponent readOnly={true}>
+            {bookmark}
+          </BookmarkMarkdownComponent>
         }
-        footer={null}
+        footer={
+          getSourceUrl(bookmark) && (
+            <FooterLinkURL url={getSourceUrl(bookmark)} />
+          )
+        }
         wrapTags={true}
         bookmark={bookmark}
         className={className}
+        bookmarkIndex={bookmarkIndex}
         fitHeight={true}
         image={(layout, className) =>
           bookmarkLayoutSwitch(layout, {
             grid: null,
             masonry: null,
-            list: (
+            compact: null,
+            list: banner ? (
+              <div className="relative size-full flex-1">
+                <Link href={`/dashboard/preview/${bookmark.id}`}>
+                  <Image
+                    alt="card banner"
+                    fill={true}
+                    unoptimized
+                    className={cn("flex-1", className)}
+                    src={getAssetUrl(banner.id)}
+                  />
+                </Link>
+              </div>
+            ) : (
               <div
                 className={cn(
                   "flex size-full items-center justify-center bg-accent text-center",

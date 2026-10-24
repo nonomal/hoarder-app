@@ -11,6 +11,7 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+import { toast } from "@/components/ui/sonner";
 import LoadingSpinner from "@/components/ui/spinner";
 import {
   Table,
@@ -20,13 +21,14 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { toast } from "@/components/ui/use-toast";
-import { api } from "@/lib/trpc";
+import { useTranslation } from "@/lib/i18n/client";
 import { cn } from "@/lib/utils";
+import { useQuery } from "@tanstack/react-query";
 import { distance } from "fastest-levenshtein";
 import { Check, Combine, X } from "lucide-react";
 
-import { useMergeTag } from "@hoarder/shared-react/hooks/tags";
+import { useMergeTag } from "@karakeep/shared-react/hooks/tags";
+import { useTRPC } from "@karakeep/shared-react/trpc";
 
 interface Suggestion {
   mergeIntoId: string;
@@ -56,6 +58,7 @@ const useSuggestions = () => {
 };
 
 function ApplyAllButton({ suggestions }: { suggestions: Suggestion[] }) {
+  const { t } = useTranslation();
   const [applying, setApplying] = useState(false);
   const { mutateAsync } = useMergeTag({
     onError: (e) => {
@@ -91,7 +94,7 @@ function ApplyAllButton({ suggestions }: { suggestions: Suggestion[] }) {
 
   return (
     <ActionConfirmingDialog
-      title="Merge all suggestions?"
+      title={t("cleanups.duplicate_tags.merge_all_suggestions")}
       description={`Are you sure you want to apply all ${suggestions.length} suggestions?`}
       actionButton={(setDialogOpen) => (
         <ActionButton
@@ -99,14 +102,14 @@ function ApplyAllButton({ suggestions }: { suggestions: Suggestion[] }) {
           variant="destructive"
           onClick={() => applyAll(setDialogOpen)}
         >
-          <Check className="mr-2 size-4" />
-          Apply All
+          <Check className="size-4" />
+          {t("actions.apply_all")}
         </ActionButton>
       )}
     >
       <Button variant="destructive">
-        <Check className="mr-2 size-4" />
-        Apply All
+        <Check className="size-4" />
+        {t("actions.apply_all")}
       </Button>
     </ActionConfirmingDialog>
   );
@@ -121,6 +124,7 @@ function SuggestionRow({
   updateMergeInto: (suggestion: Suggestion, newMergeIntoId: string) => void;
   deleteSuggestion: (suggestion: Suggestion) => void;
 }) {
+  const { t } = useTranslation();
   const { mutate, isPending } = useMergeTag({
     onSuccess: () => {
       toast({
@@ -179,16 +183,16 @@ function SuggestionRow({
             })
           }
         >
-          <Combine className="mr-2 size-4" />
-          Merge
+          <Combine className="size-4" />
+          {t("actions.merge")}
         </ActionButton>
 
         <Button
           variant={"secondary"}
           onClick={() => deleteSuggestion(suggestion)}
         >
-          <X className="mr-2 size-4" />
-          Ignore
+          <X className="size-4" />
+          {t("actions.ignore")}
         </Button>
       </TableCell>
     </TableRow>
@@ -196,17 +200,22 @@ function SuggestionRow({
 }
 
 export function TagDuplicationDetection() {
+  const api = useTRPC();
   const [expanded, setExpanded] = useState(false);
-  let { data: allTags } = api.tags.list.useQuery(undefined, {
-    refetchOnWindowFocus: false,
-  });
+  const { data: allTags } = useQuery(
+    api.tags.list.queryOptions(
+      {},
+      {
+        refetchOnWindowFocus: false,
+      },
+    ),
+  );
 
   const { suggestions, updateMergeInto, setSuggestions, deleteSuggestion } =
     useSuggestions();
 
   useEffect(() => {
-    allTags = allTags ?? { tags: [] };
-    const sortedTags = allTags.tags.sort((a, b) =>
+    const sortedTags = [...(allTags?.tags ?? [])].sort((a, b) =>
       normalizeTag(a.name).localeCompare(normalizeTag(b.name)),
     );
 

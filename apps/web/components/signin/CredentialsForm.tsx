@@ -1,8 +1,10 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
+import Link from "next/link";
+import { useRouter, useSearchParams } from "next/navigation";
 import { ActionButton } from "@/components/ui/action-button";
+import { Alert, AlertTitle } from "@/components/ui/alert";
 import {
   Form,
   FormControl,
@@ -12,225 +14,163 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { signIn } from "@/lib/auth/client";
 import { useClientConfig } from "@/lib/clientConfig";
-import { api } from "@/lib/trpc";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { TRPCClientError } from "@trpc/client";
-import { signIn } from "next-auth/react";
+import { AlertCircle, Lock } from "lucide-react";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
-
-import { zSignUpSchema } from "@hoarder/shared/types/users";
 
 const signInSchema = z.object({
   email: z.string().email(),
   password: z.string(),
 });
 
-function SignIn() {
-  const [signinError, setSigninError] = useState(false);
+const SIGNIN_FAILED = "Incorrect email or password";
+const OAUTH_FAILED = "OAuth login failed: ";
+
+export default function CredentialsForm() {
+  const [signinError, setSigninError] = useState("");
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const clientConfig = useClientConfig();
+
+  const oAuthError = searchParams.get("error");
+  if (oAuthError && !signinError) {
+    setSigninError(`${OAUTH_FAILED} ${oAuthError}`);
+  }
+
   const form = useForm<z.infer<typeof signInSchema>>({
     resolver: zodResolver(signInSchema),
+    defaultValues: {
+      email: "",
+      password: "",
+    },
   });
 
+  if (clientConfig.auth.disablePasswordAuth) {
+    return (
+      <div className="space-y-4">
+        {signinError && (
+          <Alert variant="destructive">
+            <AlertCircle className="h-4 w-4" />
+            <AlertTitle>{signinError}</AlertTitle>
+          </Alert>
+        )}
+        <Alert>
+          <Lock className="h-4 w-4" />
+          <AlertTitle>
+            Password authentication is currently disabled.
+          </AlertTitle>
+        </Alert>
+      </div>
+    );
+  }
+
   return (
-    <Form {...form}>
-      <form
-        onSubmit={form.handleSubmit(async (value) => {
-          const resp = await signIn("credentials", {
-            redirect: false,
-            email: value.email,
-            password: value.password,
-          });
-          if (!resp || !resp?.ok) {
-            setSigninError(true);
-            return;
-          }
-          router.replace("/");
-        })}
-      >
-        <div className="flex w-full flex-col space-y-2">
+    <div className="space-y-6">
+      <Form {...form}>
+        <form
+          // POST so a submit before hydration doesn't put the password in the URL.
+          method="post"
+          onSubmit={form.handleSubmit(async (value) => {
+            const resp = await signIn("credentials", {
+              email: value.email.trim(),
+              password: value.password,
+            });
+            if (!resp.ok) {
+              if (resp.code === "INVALID_EMAIL_OR_PASSWORD") {
+                setSigninError(SIGNIN_FAILED);
+              } else if (resp.code === "EMAIL_NOT_VERIFIED") {
+                router.replace(
+                  `/check-email?email=${encodeURIComponent(value.email.trim())}`,
+                );
+              } else {
+                setSigninError(resp.error ?? SIGNIN_FAILED);
+              }
+              return;
+            }
+            router.replace("/");
+          })}
+          className="space-y-4"
+        >
           {signinError && (
-            <p className="w-full text-center text-destructive">
-              Incorrect username or password
-            </p>
+            <Alert variant="destructive">
+              <AlertCircle className="h-4 w-4" />
+              <AlertTitle>{signinError}</AlertTitle>
+            </Alert>
           )}
+
           <FormField
             control={form.control}
             name="email"
-            render={({ field }) => {
-              return (
-                <FormItem>
-                  <FormLabel>Email</FormLabel>
-                  <FormControl>
-                    <Input type="text" placeholder="Email" {...field} />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              );
-            }}
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>Email</FormLabel>
+                <FormControl>
+                  <Input
+                    type="email"
+                    autoComplete="email"
+                    spellCheck={false}
+                    placeholder="Enter your email"
+                    {...field}
+                  />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
           />
+
           <FormField
             control={form.control}
             name="password"
-            render={({ field }) => {
-              return (
-                <FormItem>
-                  <FormLabel>Password</FormLabel>
-                  <FormControl>
-                    <Input type="password" placeholder="Password" {...field} />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              );
-            }}
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>Password</FormLabel>
+                <FormControl>
+                  <Input
+                    type="password"
+                    autoComplete="current-password"
+                    placeholder="Enter your password"
+                    {...field}
+                  />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
           />
+
           <ActionButton
             ignoreDemoMode
             type="submit"
             loading={form.formState.isSubmitting}
+            className="w-full"
           >
             Sign In
           </ActionButton>
-        </div>
-      </form>
-    </Form>
-  );
-}
 
-function SignUp() {
-  const clientConfig = useClientConfig();
-  const form = useForm<z.infer<typeof zSignUpSchema>>({
-    resolver: zodResolver(zSignUpSchema),
-  });
-  const [errorMessage, setErrorMessage] = useState("");
+          <div className="text-center">
+            <Link
+              href="/forgot-password"
+              className="text-sm text-muted-foreground underline hover:text-primary"
+            >
+              Forgot your password?
+            </Link>
+          </div>
+        </form>
+      </Form>
 
-  const router = useRouter();
-
-  const createUserMutation = api.users.create.useMutation();
-
-  return (
-    <Form {...form}>
-      <form
-        onSubmit={form.handleSubmit(async (value) => {
-          try {
-            await createUserMutation.mutateAsync(value);
-          } catch (e) {
-            if (e instanceof TRPCClientError) {
-              setErrorMessage(e.message);
-            }
-            return;
-          }
-          const resp = await signIn("credentials", {
-            redirect: false,
-            email: value.email,
-            password: value.password,
-          });
-          if (!resp || !resp.ok) {
-            setErrorMessage("Hit an unexpected error while signing in");
-            return;
-          }
-          router.replace("/");
-        })}
-      >
-        <div className="flex w-full flex-col space-y-2">
-          {errorMessage && (
-            <p className="w-full text-center text-destructive">
-              {errorMessage}
-            </p>
-          )}
-          <FormField
-            control={form.control}
-            name="name"
-            render={({ field }) => {
-              return (
-                <FormItem>
-                  <FormLabel>Name</FormLabel>
-                  <FormControl>
-                    <Input type="text" placeholder="Name" {...field} />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              );
-            }}
-          />
-          <FormField
-            control={form.control}
-            name="email"
-            render={({ field }) => {
-              return (
-                <FormItem>
-                  <FormLabel>Email</FormLabel>
-                  <FormControl>
-                    <Input type="text" placeholder="Email" {...field} />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              );
-            }}
-          />
-          <FormField
-            control={form.control}
-            name="password"
-            render={({ field }) => {
-              return (
-                <FormItem>
-                  <FormLabel>Password</FormLabel>
-                  <FormControl>
-                    <Input type="password" placeholder="Password" {...field} />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              );
-            }}
-          />
-          <FormField
-            control={form.control}
-            name="confirmPassword"
-            render={({ field }) => {
-              return (
-                <FormItem>
-                  <FormLabel>Confirm Password</FormLabel>
-                  <FormControl>
-                    <Input
-                      type="password"
-                      placeholder="Confirm Password"
-                      {...field}
-                    />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              );
-            }}
-          />
-          <ActionButton
-            type="submit"
-            loading={form.formState.isSubmitting}
-            disabled={clientConfig.auth.disableSignups}
+      <div className="text-center">
+        <p className="text-sm text-gray-600">
+          Don&apos;t have an account?{" "}
+          <Link
+            href="/signup"
+            className="font-medium text-blue-600 hover:text-blue-500"
           >
-            Sign Up
-          </ActionButton>
-        </div>
-      </form>
-    </Form>
-  );
-}
-
-export default function CredentialsForm() {
-  return (
-    <Tabs defaultValue="signin" className="w-full">
-      <TabsList className="grid w-full grid-cols-2">
-        <TabsTrigger value="signin">Sign In</TabsTrigger>
-        <TabsTrigger value="signup">Sign Up</TabsTrigger>
-      </TabsList>
-      <TabsContent value="signin">
-        <SignIn />
-      </TabsContent>
-      <TabsContent value="signup">
-        <SignUp />
-      </TabsContent>
-    </Tabs>
+            Sign up
+          </Link>
+        </p>
+      </div>
+    </div>
   );
 }

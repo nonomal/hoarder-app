@@ -1,23 +1,26 @@
-import pwa from "next-pwa";
+import bundleAnalyzer from "@next/bundle-analyzer";
 
-const withPWA = pwa({
-  dest: "public",
-  disable: process.env.NODE_ENV != "production",
+const withBundleAnalyzer = bundleAnalyzer({
+  enabled: process.env.ANALYZE === "true",
 });
 
 /** @type {import('next').NextConfig} */
-const nextConfig = withPWA({
+const nextConfig = {
   output: "standalone",
+  turbopack: {
+    rules: {
+      "*.svg": {
+        loaders: ["@svgr/webpack"],
+        as: "*.js",
+      },
+    },
+  },
   webpack: (config) => {
     config.module.rules.push({
       test: /\.svg$/,
       use: ["@svgr/webpack"],
     });
     return config;
-  },
-  devIndicators: {
-    buildActivity: true,
-    buildActivityPosition: "bottom-left",
   },
   async headers() {
     return [
@@ -34,7 +37,7 @@ const nextConfig = withPWA({
           // Allows for specific methods accepted
           {
             key: "Access-Control-Allow-Methods",
-            value: "GET, POST, PUT, DELETE, OPTIONS",
+            value: "GET, POST, PUT, PATCH, DELETE, OPTIONS",
           },
           // Allows for specific headers accepted (These are a few standard ones)
           {
@@ -50,11 +53,14 @@ const nextConfig = withPWA({
     ];
   },
 
-  // transpilePackages: ["@hoarder/shared", "@hoarder/db", "@hoarder/trpc"],
+  // transpilePackages: ["@karakeep/shared", "@karakeep/db", "@karakeep/trpc"],
 
   /** We already do linting and typechecking as separate tasks in CI */
-  eslint: { ignoreDuringBuilds: true },
   typescript: { ignoreBuildErrors: true },
-});
 
-export default nextConfig;
+  allowedDevOrigins: process.env.ALLOWED_DEV_ORIGINS?.split(","),
+
+  agentRules: false,
+};
+
+export default withBundleAnalyzer(nextConfig);

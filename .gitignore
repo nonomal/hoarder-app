@@ -3,6 +3,7 @@
 # dependencies
 node_modules
 .pnp
+.pnpm-store
 .pnp.js
 .yarn/install-state.gz
 
@@ -11,10 +12,15 @@ coverage
 
 # next.js
 .next/
+**/next-env.d.ts
+
+# astro
+.astro/
 out/
 
 # production
 build
+dist
 
 # misc
 .DS_Store
@@ -49,3 +55,21 @@ data
 
 # Turbo
 .turbo
+
+# Idea
+.idea
+*.iml
+
+# Aider
+.aider*
+
+# VS-Code
+.vscode
+auth_failures.log
+.claude/settings.local.json
+
+# Local directory for AI agent contexts
+.aicontext/
+.codex
+.claude/worktrees
+jean.json

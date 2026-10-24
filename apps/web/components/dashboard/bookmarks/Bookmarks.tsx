@@ -3,7 +3,7 @@ import { Separator } from "@/components/ui/separator";
 import { api } from "@/server/api/client";
 import { getServerAuthSession } from "@/server/auth";
 
-import type { ZGetBookmarksRequest } from "@hoarder/shared/types/bookmarks";
+import type { ZGetBookmarksRequest } from "@karakeep/shared/types/bookmarks";
 
 import UpdatableBookmarksGrid from "./UpdatableBookmarksGrid";
 
@@ -13,8 +13,8 @@ export default async function Bookmarks({
   showDivider,
   showEditorCard = false,
 }: {
-  query: ZGetBookmarksRequest;
-  header: React.ReactNode;
+  query: Omit<ZGetBookmarksRequest, "sortOrder" | "includeContent">; // Sort order is handled by the store
+  header?: React.ReactNode;
   showDivider?: boolean;
   showEditorCard?: boolean;
 }) {
@@ -23,7 +23,9 @@ export default async function Bookmarks({
     redirect("/");
   }
 
-  const bookmarks = await api.bookmarks.getBookmarks(query);
+  const bookmarks = await api.bookmarks.getBookmarks({
+    ...query,
+  });
 
   return (
     <div className="flex flex-col gap-3">

@@ -23,7 +23,7 @@ const ActionButton = React.forwardRef<HTMLButtonElement, ActionButtonProps>(
     ref,
   ) => {
     const clientConfig = useClientConfig();
-    spinner ||= <LoadingSpinner />;
+    spinner ||= <LoadingSpinner className="size-6" />;
     if (!ignoreDemoMode && clientConfig.demoMode) {
       disabled = true;
     } else if (disabled !== undefined) {
@@ -46,7 +46,7 @@ const ActionButtonWithTooltip = React.forwardRef<
 >(({ tooltip, delayDuration, ...props }, ref) => {
   return (
     <Tooltip delayDuration={delayDuration}>
-      <TooltipTrigger>
+      <TooltipTrigger asChild>
         <ActionButton ref={ref} {...props} />
       </TooltipTrigger>
       <TooltipPortal>
@@ -58,3 +58,4 @@ const ActionButtonWithTooltip = React.forwardRef<
 ActionButtonWithTooltip.displayName = "ActionButtonWithTooltip";
 
 export { ActionButton, ActionButtonWithTooltip };
+export type { ActionButtonProps };

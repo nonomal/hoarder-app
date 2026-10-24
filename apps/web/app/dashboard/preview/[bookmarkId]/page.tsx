@@ -3,11 +3,10 @@ import BookmarkPreview from "@/components/dashboard/preview/BookmarkPreview";
 import { api } from "@/server/api/client";
 import { TRPCError } from "@trpc/server";
 
-export default async function BookmarkPreviewPage({
-  params,
-}: {
-  params: { bookmarkId: string };
+export default async function BookmarkPreviewPage(props: {
+  params: Promise<{ bookmarkId: string }>;
 }) {
+  const params = await props.params;
   let bookmark;
   try {
     bookmark = await api.bookmarks.getBookmark({
@@ -23,7 +22,7 @@ export default async function BookmarkPreviewPage({
   }
 
   return (
-    <div className="max-h-screen">
+    <div className="h-[calc(100dvh-theme(spacing.16)-theme(spacing.8))] overflow-hidden">
       <BookmarkPreview bookmarkId={bookmark.id} initialData={bookmark} />
     </div>
   );

@@ -1,168 +1,69 @@
-import {
-  ActivityIndicator,
-  Image,
-  Platform,
-  Pressable,
-  ScrollView,
-  Text,
-  View,
-} from "react-native";
-import Markdown from "react-native-markdown-display";
-import * as Haptics from "expo-haptics";
-import { Link } from "expo-router";
-import * as WebBrowser from "expo-web-browser";
+import { Text } from "@/components/ui/Text";
 import useAppSettings from "@/lib/settings";
-import { api } from "@/lib/trpc";
-import { MenuView } from "@react-native-menu/menu";
-import { Ellipsis, Star } from "lucide-react-native";
+import { buildApiHeaders } from "@/lib/utils";
+import { useWhoAmI } from "@karakeep/shared-react/hooks/users";
+import { useQuery } from "@tanstack/react-query";
+import { format, isAfter, subYears } from "date-fns";
+import { Image } from "expo-image";
+import { useRouter } from "expo-router";
+import { Linking, View } from "react-native";
 
-import type { ZBookmark } from "@hoarder/shared/types/bookmarks";
-import {
-  useDeleteBookmark,
-  useUpdateBookmark,
-} from "@hoarder/shared-react/hooks/bookmarks";
+import { useTRPC } from "@karakeep/shared-react/trpc";
+import type { ZBookmark } from "@karakeep/shared/types/bookmarks";
+import { BookmarkTypes } from "@karakeep/shared/types/bookmarks";
 import {
   getBookmarkLinkImageUrl,
-  isBookmarkStillLoading,
-  isBookmarkStillTagging,
-} from "@hoarder/shared-react/utils/bookmarkUtils";
+  getBookmarkRefreshInterval,
+  getBookmarkTitle,
+} from "@karakeep/shared/utils/bookmarkUtils";
 
-import { TailwindResolver } from "../TailwindResolver";
-import { Divider } from "../ui/Divider";
-import { Skeleton } from "../ui/Skeleton";
 import { useToast } from "../ui/Toast";
+import BookmarkAssetImage from "./BookmarkAssetImage";
+import BookmarkTextMarkdown from "./BookmarkTextMarkdown";
+import {
+  BookmarkCardContainer,
+  BookmarkCardContext,
+} from "./card/BookmarkCard";
+import TagList from "./card/TagList";
+import ActionBar from "./card/ActionBar";
+import { useBookmarkActions } from "./card/use-bookmark-actions";
 
-function ActionBar({ bookmark }: { bookmark: ZBookmark }) {
-  const { toast } = useToast();
+const UNTITLED_BOOKMARK_TITLE = "Untitled";
 
-  const onError = () => {
-    toast({
-      message: "Something went wrong",
-      variant: "destructive",
-      showProgress: false,
-    });
-  };
+function getDisplayTitle(bookmark: ZBookmark) {
+  return getBookmarkTitle(bookmark)?.trim() || UNTITLED_BOOKMARK_TITLE;
+}
 
-  const { mutate: deleteBookmark, isPending: isDeletionPending } =
-    useDeleteBookmark({
-      onSuccess: () => {
-        toast({
-          message: "The bookmark has been deleted!",
-          showProgress: false,
-        });
-      },
-      onError,
-    });
-
-  const { mutate: favouriteBookmark, variables } = useUpdateBookmark({
-    onError,
-  });
-
-  const { mutate: archiveBookmark, isPending: isArchivePending } =
-    useUpdateBookmark({
-      onSuccess: (resp) => {
-        toast({
-          message: `The bookmark has been ${resp.archived ? "archived" : "un-archived"}!`,
-          showProgress: false,
-        });
-      },
-      onError,
-    });
+function BookmarkFooterMetadata({ ctx }: { ctx: BookmarkCardContext }) {
+  const oneYearAgo = subYears(new Date(), 1);
+  const dateFormat = isAfter(ctx.bookmark.createdAt, oneYearAgo)
+    ? "MMM d"
+    : "MMM d, yyyy";
 
   return (
-    <View className="flex flex-row gap-4">
-      {(isArchivePending || isDeletionPending) && <ActivityIndicator />}
-      <Pressable
-        onPress={() => {
-          Haptics.selectionAsync();
-          favouriteBookmark({
-            bookmarkId: bookmark.id,
-            favourited: !bookmark.favourited,
-          });
-        }}
-      >
-        {(variables ? variables.favourited : bookmark.favourited) ? (
-          <Star fill="#ebb434" color="#ebb434" />
-        ) : (
-          <Star color="gray" />
-        )}
-      </Pressable>
-
-      <MenuView
-        onPressAction={({ nativeEvent }) => {
-          Haptics.selectionAsync();
-          if (nativeEvent.event === "delete") {
-            deleteBookmark({
-              bookmarkId: bookmark.id,
-            });
-          } else if (nativeEvent.event === "archive") {
-            archiveBookmark({
-              bookmarkId: bookmark.id,
-              archived: !bookmark.archived,
-            });
-          }
-        }}
-        actions={[
-          {
-            id: "archive",
-            title: bookmark.archived ? "Un-archive" : "Archive",
-            image: Platform.select({
-              ios: "folder",
-            }),
-          },
-          {
-            id: "delete",
-            title: "Delete",
-            attributes: {
-              destructive: true,
-            },
-            image: Platform.select({
-              ios: "trash",
-            }),
-          },
-        ]}
-        shouldOpenOnLongPress={false}
-      >
-        <Ellipsis onPress={() => Haptics.selectionAsync()} color="gray" />
-      </MenuView>
+    <View className="min-w-0 flex-1 flex-row items-center gap-1.5">
+      {ctx.footerExtras && (
+        <>
+          <BookmarkCardContainer.FooterExtras />
+          <Text className="shrink-0">•</Text>
+        </>
+      )}
+      <Text className="shrink-0" numberOfLines={1} selectable>
+        {format(ctx.bookmark.createdAt, dateFormat)}
+      </Text>
     </View>
   );
 }
 
-function TagList({ bookmark }: { bookmark: ZBookmark }) {
-  const tags = bookmark.tags;
-
-  if (isBookmarkStillTagging(bookmark)) {
-    return (
-      <>
-        <Skeleton className="h-4 w-full" />
-        <Skeleton className="h-4 w-full" />
-      </>
-    );
-  }
-
-  return (
-    <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-      <View className="flex flex-row gap-2">
-        {tags.map((t) => (
-          <View
-            key={t.id}
-            className="rounded-full border border-accent px-2.5 py-0.5 text-xs font-semibold"
-          >
-            <Link className="text-foreground" href={`dashboard/tags/${t.id}`}>
-              {t.name}
-            </Link>
-          </View>
-        ))}
-      </View>
-    </ScrollView>
-  );
-}
-
-function LinkCard({ bookmark }: { bookmark: ZBookmark }) {
+function useLinkCardContext({
+  bookmark,
+}: {
+  bookmark: ZBookmark;
+}): Omit<BookmarkCardContext, "isOwner" | "bookmark" | "actions"> | undefined {
   const { settings } = useAppSettings();
-  if (bookmark.content.type !== "link") {
-    throw new Error("Wrong content type rendered");
+
+  if (bookmark.content.type !== BookmarkTypes.LINK) {
+    return undefined;
   }
 
   const url = bookmark.content.url;
@@ -170,128 +71,207 @@ function LinkCard({ bookmark }: { bookmark: ZBookmark }) {
 
   const imageUrl = getBookmarkLinkImageUrl(bookmark.content);
 
-  let imageComp;
+  let contentComp;
   if (imageUrl) {
-    imageComp = (
-      <Image
-        source={
-          imageUrl.localAsset
-            ? {
-                uri: `${settings.address}${imageUrl.url}`,
-                headers: {
-                  Authorization: `Bearer ${settings.apiKey}`,
-                },
-              }
-            : {
-                uri: imageUrl.url,
-              }
-        }
-        className="h-56 min-h-56 w-full object-cover"
-      />
-    );
-  } else {
-    imageComp = (
-      <Image
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-        source={require("@/assets/blur.jpeg")}
-        className="h-56 w-full rounded-t-lg"
-      />
-    );
-  }
-
-  return (
-    <View className="flex gap-2">
-      {imageComp}
-      <View className="flex gap-2 p-2">
-        <Text
-          className="line-clamp-2 text-xl font-bold text-foreground"
-          onPress={() => WebBrowser.openBrowserAsync(url)}
-        >
-          {bookmark.title ?? bookmark.content.title ?? parsedUrl.host}
-        </Text>
-        <TagList bookmark={bookmark} />
-        <Divider orientation="vertical" className="mt-2 h-0.5 w-full" />
-        <View className="mt-2 flex flex-row justify-between px-2 pb-2">
-          <Text className="my-auto line-clamp-1 text-foreground">
-            {parsedUrl.host}
-          </Text>
-          <ActionBar bookmark={bookmark} />
-        </View>
-      </View>
-    </View>
-  );
-}
-
-function TextCard({ bookmark }: { bookmark: ZBookmark }) {
-  if (bookmark.content.type !== "text") {
-    throw new Error("Wrong content type rendered");
-  }
-  const content = bookmark.content.text;
-  return (
-    <View className="flex max-h-96 gap-2 p-2">
-      {bookmark.title && (
-        <Text className="line-clamp-2 text-xl font-bold text-foreground">
-          {bookmark.title}
-        </Text>
-      )}
-      <View className="max-h-56 overflow-hidden p-2 text-foreground">
-        <TailwindResolver
-          className="text-foreground"
-          comp={(styles) => (
-            <Markdown
-              style={{
-                text: {
-                  color: styles?.color?.toString(),
-                },
-              }}
-            >
-              {content}
-            </Markdown>
-          )}
+    contentComp = (
+      <View className="h-56 min-h-56 w-full">
+        <Image
+          source={
+            imageUrl.localAsset
+              ? {
+                  uri: `${settings.address}${imageUrl.url}`,
+                  headers: buildApiHeaders(
+                    settings.apiKey,
+                    settings.customHeaders,
+                  ),
+                }
+              : {
+                  uri: imageUrl.url,
+                }
+          }
+          style={{ width: "100%", height: "100%" }}
+          contentFit="cover"
         />
       </View>
-      <TagList bookmark={bookmark} />
-      <Divider orientation="vertical" className="mt-2 h-0.5 w-full" />
-      <View className="flex flex-row justify-between p-2">
-        <View />
-        <ActionBar bookmark={bookmark} />
+    );
+  } else {
+    contentComp = (
+      <View className="h-56 w-full overflow-hidden rounded-t-lg">
+        <Image
+          // oxlint-disable-next-line no-require-imports
+          source={require("@/assets/blur.jpeg")}
+          style={{ width: "100%", height: "100%" }}
+          contentFit="cover"
+        />
       </View>
+    );
+  }
+
+  const compactMedia = (
+    <View className="h-28 w-24 overflow-hidden rounded-lg bg-muted">
+      <Image
+        source={
+          imageUrl
+            ? imageUrl.localAsset
+              ? {
+                  uri: `${settings.address}${imageUrl.url}`,
+                  headers: buildApiHeaders(
+                    settings.apiKey,
+                    settings.customHeaders,
+                  ),
+                }
+              : {
+                  uri: imageUrl.url,
+                }
+            : // oxlint-disable-next-line no-require-imports
+              require("@/assets/blur.jpeg")
+        }
+        style={{ width: "100%", height: "100%" }}
+        contentFit="cover"
+      />
     </View>
+  );
+
+  return {
+    media: contentComp,
+    compactMedia,
+    title: getDisplayTitle(bookmark),
+    footerExtras: (
+      <Text className="my-auto shrink" numberOfLines={1} selectable>
+        {parsedUrl.host}
+      </Text>
+    ),
+  };
+}
+
+function useTextCardContext({
+  bookmark,
+}: {
+  bookmark: ZBookmark;
+}): Omit<BookmarkCardContext, "isOwner" | "bookmark" | "actions"> | undefined {
+  if (bookmark.content.type !== BookmarkTypes.TEXT) {
+    return undefined;
+  }
+  const content = bookmark.content.text;
+
+  return {
+    body: (
+      <View className="max-h-56 overflow-hidden p-2 text-foreground">
+        <BookmarkTextMarkdown text={content} />
+      </View>
+    ),
+    compactBody: (
+      <Text className="text-sm leading-5 text-foreground" numberOfLines={3}>
+        {content}
+      </Text>
+    ),
+    title: getDisplayTitle(bookmark),
+  };
+}
+
+function useAssetCardContext({
+  bookmark,
+}: {
+  bookmark: ZBookmark;
+}): Omit<BookmarkCardContext, "isOwner" | "bookmark" | "actions"> | undefined {
+  if (bookmark.content.type !== BookmarkTypes.ASSET) {
+    return undefined;
+  }
+  const assetImage =
+    bookmark.assets.find((r) => r.assetType == "assetScreenshot")?.id ??
+    bookmark.content.assetId;
+
+  return {
+    media: (
+      <BookmarkAssetImage
+        assetId={assetImage}
+        className="h-56 min-h-56 w-full bg-muted"
+        contentFit="contain"
+      />
+    ),
+    compactMedia: (
+      <BookmarkAssetImage
+        assetId={assetImage}
+        className="h-28 w-24 overflow-hidden rounded-lg bg-muted"
+      />
+    ),
+    title: getDisplayTitle(bookmark),
+  };
+}
+
+function CardLayout({ ctx }: { ctx: BookmarkCardContext }) {
+  return (
+    <BookmarkCardContainer.Provider value={ctx}>
+      <BookmarkCardContainer.Root>
+        <View className="flex gap-2">
+          <BookmarkCardContainer.Media />
+          <View className="flex gap-2 p-2">
+            <BookmarkCardContainer.Title />
+            <BookmarkCardContainer.Body />
+            <BookmarkCardContainer.NoteSection />
+            <TagList bookmark={ctx.bookmark} />
+            <View className="flex-row justify-between border-t border-border px-2 pb-2 pt-2">
+              <BookmarkFooterMetadata ctx={ctx} />
+              <ActionBar actions={ctx.actions} />
+            </View>
+          </View>
+        </View>
+      </BookmarkCardContainer.Root>
+    </BookmarkCardContainer.Provider>
   );
 }
 
-function AssetCard({ bookmark }: { bookmark: ZBookmark }) {
-  const { settings } = useAppSettings();
-  if (bookmark.content.type !== "asset") {
-    throw new Error("Wrong content type rendered");
-  }
-  const title = bookmark.title ?? bookmark.content.fileName;
+function ListLayout({ ctx }: { ctx: BookmarkCardContext }) {
+  const hasCompactMedia = Boolean(ctx.compactMedia ?? ctx.media);
 
   return (
-    <View className="flex gap-2">
-      <Image
-        source={{
-          uri: `${settings.address}/api/assets/${bookmark.content.assetId}`,
-          headers: {
-            Authorization: `Bearer ${settings.apiKey}`,
-          },
-        }}
-        className="h-56 min-h-56 w-full object-cover"
-      />
-      <View className="flex gap-2 p-2">
-        {title && (
-          <Text className="line-clamp-2 text-xl font-bold text-foreground">
-            {title}
-          </Text>
-        )}
-        <TagList bookmark={bookmark} />
-        <Divider orientation="vertical" className="mt-2 h-0.5 w-full" />
-        <View className="mt-2 flex flex-row justify-between px-2 pb-2">
-          <View />
-          <ActionBar bookmark={bookmark} />
+    <BookmarkCardContainer.Provider value={ctx}>
+      <BookmarkCardContainer.Root>
+        <View className={hasCompactMedia ? "flex-row p-3" : "flex gap-2 p-3"}>
+          {hasCompactMedia && (
+            <View className="justify-start">
+              <BookmarkCardContainer.CompactMedia />
+            </View>
+          )}
+          <View
+            className={
+              hasCompactMedia
+                ? "ml-3 min-h-28 flex-1 gap-1.5 overflow-hidden"
+                : "gap-2"
+            }
+          >
+            <View className="flex-row items-start gap-2">
+              <View className="min-w-0 flex-1 gap-0.5">
+                {ctx.title && (
+                  <Text
+                    className="text-base font-semibold leading-5 text-foreground"
+                    numberOfLines={2}
+                    onPress={ctx.titleOnPress}
+                  >
+                    {ctx.title}
+                  </Text>
+                )}
+                <BookmarkFooterMetadata ctx={ctx} />
+              </View>
+            </View>
+            <BookmarkCardContainer.CompactBody />
+            <BookmarkCardContainer.NoteSection />
+            <View className="h-7 justify-center overflow-hidden">
+              <TagList bookmark={ctx.bookmark} />
+            </View>
+            <View
+              className={
+                hasCompactMedia
+                  ? "mt-auto flex-row justify-end pt-0.5"
+                  : "flex-row justify-end pt-0.5"
+              }
+            >
+              <ActionBar actions={ctx.actions} compact />
+            </View>
+          </View>
         </View>
-      </View>
-    </View>
+      </BookmarkCardContainer.Root>
+    </BookmarkCardContainer.Provider>
   );
 }
 
@@ -300,42 +280,69 @@ export default function BookmarkCard({
 }: {
   bookmark: ZBookmark;
 }) {
-  const { data: bookmark } = api.bookmarks.getBookmark.useQuery(
-    {
-      bookmarkId: initialData.id,
-    },
-    {
-      initialData,
-      refetchInterval: (query) => {
-        const data = query.state.data;
-        if (!data) {
-          return false;
-        }
-        // If the link is not crawled or not tagged
-        if (isBookmarkStillLoading(data)) {
-          return 1000;
-        }
-        return false;
+  const api = useTRPC();
+  const { data: bookmark } = useQuery(
+    api.bookmarks.getBookmark.queryOptions(
+      {
+        bookmarkId: initialData.id,
       },
-    },
+      {
+        initialData,
+        refetchInterval: (query) => {
+          const data = query.state.data;
+          if (!data) {
+            return false;
+          }
+          return getBookmarkRefreshInterval(data);
+        },
+      },
+    ),
   );
 
-  let comp;
-  switch (bookmark.content.type) {
-    case "link":
-      comp = <LinkCard bookmark={bookmark} />;
-      break;
-    case "text":
-      comp = <TextCard bookmark={bookmark} />;
-      break;
-    case "asset":
-      comp = <AssetCard bookmark={bookmark} />;
-      break;
-  }
+  const router = useRouter();
+  const { settings } = useAppSettings();
+  const { toast } = useToast();
+  const { data: currentUser } = useWhoAmI();
+
+  const onOpenBookmark = (bookmark: ZBookmark) => {
+    if (
+      bookmark.content.type === BookmarkTypes.LINK &&
+      settings.defaultBookmarkView === "externalBrowser"
+    ) {
+      void Linking.openURL(bookmark.content.url).catch(() => {
+        toast({
+          message: "Failed to open link",
+          variant: "destructive",
+          showProgress: false,
+        });
+
+        router.push(`/dashboard/bookmarks/${bookmark.id}`);
+      });
+      return;
+    }
+
+    router.push(`/dashboard/bookmarks/${bookmark.id}`);
+  };
+
+  const linkContext = useLinkCardContext({ bookmark });
+  const textContext = useTextCardContext({ bookmark });
+  const assetContext = useAssetCardContext({ bookmark });
+  const ctx = linkContext ?? textContext ?? assetContext;
+  const Layout = settings.bookmarkLayout === "list" ? ListLayout : CardLayout;
+  const isOwner = currentUser?.id === bookmark.userId;
+  const actions = useBookmarkActions(bookmark, isOwner);
 
   return (
-    <View className="overflow-hidden rounded-xl border-b border-accent bg-background">
-      {comp}
-    </View>
+    <Layout
+      ctx={{
+        ...ctx,
+        isOwner,
+        actions,
+        bookmark,
+        mediaOnPress: () => onOpenBookmark(bookmark),
+        bodyOnPress: () => onOpenBookmark(bookmark),
+        titleOnPress: () => onOpenBookmark(bookmark),
+      }}
+    />
   );
 }

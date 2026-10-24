@@ -1,51 +1,48 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useCallback, useState } from "react";
+import { toast } from "@/components/ui/sonner";
+import { BOOKMARK_DRAG_MIME } from "@/lib/bookmark-drag";
+import useUpload from "@/lib/hooks/upload-file";
 import { cn } from "@/lib/utils";
-import { useMutation } from "@tanstack/react-query";
 import { TRPCClientError } from "@trpc/client";
 import DropZone from "react-dropzone";
 
-import { useCreateBookmarkWithPostHook } from "@hoarder/shared-react/hooks/bookmarks";
-import {
-  zUploadErrorSchema,
-  zUploadResponseSchema,
-} from "@hoarder/shared/types/uploads";
+import { useCreateBookmarkWithPostHook } from "@karakeep/shared-react/hooks/bookmarks";
+import { BookmarkTypes } from "@karakeep/shared/types/bookmarks";
 
 import LoadingSpinner from "../ui/spinner";
-import { toast } from "../ui/use-toast";
+import BookmarkSavedToast from "../utils/BookmarkSavedToast";
 
-function useUploadAsset({ onComplete }: { onComplete: () => void }) {
+export function useUploadAsset() {
   const { mutateAsync: createBookmark } = useCreateBookmarkWithPostHook({
-    onSuccess: () => {
-      toast({ description: "Bookmark uploaded" });
-      onComplete();
+    onSuccess: (resp) => {
+      if (resp.alreadyExists) {
+        toast({
+          description: <BookmarkSavedToast bookmarkId={resp.id} />,
+          variant: "default",
+        });
+      } else {
+        toast({ description: "Bookmark uploaded" });
+      }
     },
     onError: () => {
       toast({ description: "Something went wrong", variant: "destructive" });
     },
   });
 
-  const { mutateAsync: runUpload } = useMutation({
-    mutationFn: async (file: File) => {
-      const formData = new FormData();
-      formData.append("file", file);
-      const resp = await fetch("/api/assets", {
-        method: "POST",
-        body: formData,
-      });
-      if (!resp.ok) {
-        throw new Error(await resp.text());
-      }
-      return zUploadResponseSchema.parse(await resp.json());
-    },
+  const { mutateAsync: runUploadAsset } = useUpload({
     onSuccess: async (resp) => {
       const assetType =
         resp.contentType === "application/pdf" ? "pdf" : "image";
-      return createBookmark({ ...resp, type: "asset", assetType });
+      await createBookmark({
+        ...resp,
+        type: BookmarkTypes.ASSET,
+        assetType,
+        source: "web",
+      });
     },
-    onError: (error, req) => {
-      const err = zUploadErrorSchema.parse(JSON.parse(error.message));
+    onError: (err, req) => {
       toast({
         description: `${req.name}: ${err.error}`,
         variant: "destructive",
@@ -53,7 +50,30 @@ function useUploadAsset({ onComplete }: { onComplete: () => void }) {
     },
   });
 
-  return runUpload;
+  return useCallback(
+    async (file: File) => {
+      // Handle markdown files as text bookmarks
+      if (file.type === "text/markdown" || file.name.endsWith(".md")) {
+        try {
+          const content = await file.text();
+          await createBookmark({
+            type: BookmarkTypes.TEXT,
+            text: content,
+            title: file.name.replace(/\.md$/i, ""), // Remove .md extension from title
+            source: "web",
+          });
+        } catch {
+          toast({
+            description: `${file.name}: Failed to read markdown file`,
+            variant: "destructive",
+          });
+        }
+      } else {
+        return runUploadAsset(file);
+      }
+    },
+    [runUploadAsset],
+  );
 }
 
 function useUploadAssets({
@@ -65,7 +85,7 @@ function useUploadAssets({
   onFileError: (name: string, e: Error) => void;
   onAllUploaded: () => void;
 }) {
-  const runUpload = useUploadAsset({ onComplete: onFileUpload });
+  const runUpload = useUploadAsset();
 
   return async (files: File[]) => {
     if (files.length == 0) {
@@ -74,6 +94,7 @@ function useUploadAssets({
     for (const file of files) {
       try {
         await runUpload(file);
+        onFileUpload();
       } catch (e) {
         if (e instanceof TRPCClientError || e instanceof Error) {
           onFileError(file.name, e);
@@ -116,7 +137,12 @@ export default function UploadDropzone({
     <DropZone
       noClick
       onDrop={onDrop}
-      onDragEnter={() => setDragging(true)}
+      onDragEnter={(e) => {
+        // Don't show overlay for internal bookmark card drags
+        if (!e.dataTransfer.types.includes(BOOKMARK_DRAG_MIME)) {
+          setDragging(true);
+        }
+      }}
       onDragLeave={() => setDragging(false)}
     >
       {({ getRootProps, getInputProps }) => (
@@ -137,7 +163,7 @@ export default function UploadDropzone({
               </div>
             ) : (
               <p className="text-2xl font-bold text-gray-700">
-                Drop Your Image
+                Drop Your Image / PDF / Markdown file
               </p>
             )}
           </div>

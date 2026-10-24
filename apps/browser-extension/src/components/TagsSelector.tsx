@@ -1,14 +1,15 @@
 import * as React from "react";
+import { useQuery } from "@tanstack/react-query";
 import { useSet } from "@uidotdev/usehooks";
 import { Check, ChevronsUpDown, Plus } from "lucide-react";
 
 import {
   useAutoRefreshingBookmarkQuery,
   useUpdateBookmarkTags,
-} from "@hoarder/shared-react/hooks/bookmarks";
+} from "@karakeep/shared-react/hooks/bookmarks";
 
 import { cn } from "../utils/css";
-import { api } from "../utils/trpc";
+import { useTRPC } from "../utils/trpc";
 import { Button } from "./ui/button";
 import {
   Command,
@@ -16,11 +17,14 @@ import {
   CommandInput,
   CommandItem,
   CommandList,
+  CommandSeparator,
 } from "./ui/command";
-import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
+import { DynamicPopoverContent } from "./ui/dynamic-popover";
+import { Popover, PopoverTrigger } from "./ui/popover";
 
 export function TagsSelector({ bookmarkId }: { bookmarkId: string }) {
-  const { data: allTags } = api.tags.list.useQuery();
+  const api = useTRPC();
+  const { data: allTags } = useQuery(api.tags.list.queryOptions({}));
   const { data: bookmark } = useAutoRefreshingBookmarkQuery({ bookmarkId });
 
   const existingTagIds = new Set(bookmark?.tags.map((t) => t.id) ?? []);
@@ -32,14 +36,14 @@ export function TagsSelector({ bookmarkId }: { bookmarkId: string }) {
   const { mutate } = useUpdateBookmarkTags({
     onMutate: (req) => {
       req.attach.forEach((t) => currentlyUpdating.add(t.tagId ?? ""));
-      req.detach.forEach((t) => currentlyUpdating.add(t.tagId));
+      req.detach.forEach((t) => currentlyUpdating.add(t.tagId ?? ""));
     },
     onSettled: (_resp, _err, req) => {
       if (!req) {
         return;
       }
       req.attach.forEach((t) => currentlyUpdating.delete(t.tagId ?? ""));
-      req.detach.forEach((t) => currentlyUpdating.delete(t.tagId));
+      req.detach.forEach((t) => currentlyUpdating.delete(t.tagId ?? ""));
     },
   });
 
@@ -64,7 +68,7 @@ export function TagsSelector({ bookmarkId }: { bookmarkId: string }) {
           <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
         </Button>
       </PopoverTrigger>
-      <PopoverContent className="w-[200px] p-0">
+      <DynamicPopoverContent className="w-[320px] p-0">
         <Command>
           <CommandInput
             value={input}
@@ -72,6 +76,21 @@ export function TagsSelector({ bookmarkId }: { bookmarkId: string }) {
             placeholder="Search Tags ..."
           />
           <CommandList>
+            <CommandGroup>
+              <CommandItem
+                onSelect={() =>
+                  mutate({
+                    bookmarkId,
+                    attach: [{ tagName: input }],
+                    detach: [],
+                  })
+                }
+              >
+                <Plus className="mr-2 size-4" />
+                Create &quot;{input}&quot; ...
+              </CommandItem>
+            </CommandGroup>
+            <CommandSeparator />
             <CommandGroup>
               {allTags?.tags
                 .sort((a, b) => a.name.localeCompare(b.name))
@@ -95,23 +114,9 @@ export function TagsSelector({ bookmarkId }: { bookmarkId: string }) {
                   </CommandItem>
                 ))}
             </CommandGroup>
-            <CommandGroup>
-              <CommandItem
-                onSelect={() =>
-                  mutate({
-                    bookmarkId,
-                    attach: [{ tagName: input }],
-                    detach: [],
-                  })
-                }
-              >
-                <Plus className="mr-2 size-4" />
-                Create &quot;{input}&quot; ...
-              </CommandItem>
-            </CommandGroup>
           </CommandList>
         </Command>
-      </PopoverContent>
+      </DynamicPopoverContent>
     </Popover>
   );
 }

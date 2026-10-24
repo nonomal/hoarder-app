@@ -1,51 +1,46 @@
 {
   "$schema": "https://json.schemastore.org/package.json",
-  "name": "@hoarder/landing",
+  "name": "@karakeep/landing",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "next dev",
-    "clean": "git clean -xdf .next .turbo node_modules",
-    "build": "next build",
-    "start": "next start",
-    "lint": "next lint",
-    "typecheck": "tsc --noEmit",
-    "format": "prettier --check . --ignore-path ../../.gitignore"
+    "dev": "astro dev",
+    "dev:portless": "portless run --name karakeep-landing --lan astro dev",
+    "build": "astro build",
+    "preview": "astro preview",
+    "lint": "oxlint --ignore-path=../../.gitignore .",
+    "lint:fix": "oxlint --ignore-path=../../.gitignore . --fix",
+    "format": "oxfmt --ignore-path=../../.gitignore --check .",
+    "format:fix": "oxfmt --ignore-path=../../.gitignore .",
+    "typecheck": "astro check && tsc --noEmit"
   },
   "dependencies": {
-    "@radix-ui/react-slot": "^1.0.2",
-    "@svgr/webpack": "^8.1.0",
+    "@astrojs/check": "^0.9.10",
+    "@astrojs/react": "^6.0.6",
+    "@astrojs/sitemap": "^3.7.3",
+    "@radix-ui/react-slot": "^1.2.4",
+    "astro": "^7.2.8",
     "class-variance-authority": "^0.7.0",
     "clsx": "^2.1.0",
-    "lucide-react": "^0.330.0",
-    "next": "14.1.4",
-    "react": "^18.2.0",
-    "react-dom": "^18.2.0",
-    "react-select": "^5.8.0",
-    "sharp": "^0.33.3",
+    "lucide-react": "^0.501.0",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
+    "sharp": "^0.35.5",
     "tailwind-merge": "^2.2.1",
     "tailwindcss-animate": "^1.0.7"
   },
   "devDependencies": {
-    "@hoarder/eslint-config": "workspace:^0.2.0",
-    "@hoarder/prettier-config": "workspace:^0.1.0",
-    "@hoarder/tailwind-config": "workspace:^0.1.0",
-    "@hoarder/tsconfig": "workspace:^0.1.0",
+    "@karakeep/tailwind-config": "workspace:^0.1.0",
+    "@karakeep/tsconfig": "workspace:^0.1.0",
     "@tailwindcss/typography": "^0.5.10",
-    "@types/react": "^18.2.55",
-    "@types/react-dom": "^18.2.19",
+    "@types/react": "19.2.15",
+    "@types/react-dom": "19.2.3",
     "autoprefixer": "^10.4.17",
-    "postcss": "^8.4.35",
-    "tailwindcss": "^3.4.1"
-  },
-  "eslintConfig": {
-    "root": true,
-    "extends": [
-      "@hoarder/eslint-config/base",
-      "@hoarder/eslint-config/nextjs",
-      "@hoarder/eslint-config/react"
-    ]
-  },
-  "prettier": "@hoarder/prettier-config"
+    "portless": "^0.10.3",
+    "postcss": "^8.5.28",
+    "tailwindcss": "^3.4.1",
+    "vite": "^8.3.0",
+    "vite-plugin-svgr": "^4.3.0"
+  }
 }

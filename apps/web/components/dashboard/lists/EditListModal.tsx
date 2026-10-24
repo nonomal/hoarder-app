@@ -1,4 +1,8 @@
-import { useEffect, useState } from "react";
+"use client";
+
+import { useEffect, useMemo, useState } from "react";
+import dynamic from "next/dynamic";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ActionButton } from "@/components/ui/action-button";
 import { Button } from "@/components/ui/button";
@@ -14,6 +18,7 @@ import {
 import {
   Form,
   FormControl,
+  FormDescription,
   FormField,
   FormItem,
   FormLabel,
@@ -25,9 +30,15 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import { toast } from "@/components/ui/use-toast";
-import data from "@emoji-mart/data";
-import Picker from "@emoji-mart/react";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { toast } from "@/components/ui/sonner";
+import { useTranslation } from "@/lib/i18n/client";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { X } from "lucide-react";
 import { useForm } from "react-hook-form";
@@ -36,24 +47,46 @@ import { z } from "zod";
 import {
   useCreateBookmarkList,
   useEditBookmarkList,
-} from "@hoarder/shared-react/hooks/lists";
-import { ZBookmarkList } from "@hoarder/shared/types/lists";
+} from "@karakeep/shared-react/hooks/lists";
+import { parseSearchQuery } from "@karakeep/shared/searchQueryParser";
+import {
+  ZBookmarkList,
+  zNewBookmarkListSchema,
+} from "@karakeep/shared/types/lists";
 
+import QueryExplainerTooltip from "../search/QueryExplainerTooltip";
 import { BookmarkListSelector } from "./BookmarkListSelector";
+
+// The emoji dataset is large, only load it when the picker is opened.
+const EmojiPicker = dynamic(
+  async () => {
+    const [{ default: data }, { default: Picker }] = await Promise.all([
+      import("@emoji-mart/data"),
+      import("@emoji-mart/react"),
+    ]);
+    return function EmojiPicker(props: {
+      onEmojiSelect: (e: { native: string }) => void;
+    }) {
+      return <Picker data={data} {...props} />;
+    };
+  },
+  { ssr: false },
+);
 
 export function EditListModal({
   open: userOpen,
   setOpen: userSetOpen,
   list,
-  parent,
+  prefill,
   children,
 }: {
   open?: boolean;
   setOpen?: (v: boolean) => void;
   list?: ZBookmarkList;
-  parent?: ZBookmarkList;
+  prefill?: Partial<Omit<ZBookmarkList, "id">>;
   children?: React.ReactNode;
 }) {
+  const { t } = useTranslation();
   const router = useRouter();
   if (
     (userOpen !== undefined && !userSetOpen) ||
@@ -62,17 +95,16 @@ export function EditListModal({
     throw new Error("You must provide both open and setOpen or neither");
   }
   const [customOpen, customSetOpen] = useState(false);
-  const formSchema = z.object({
-    name: z.string(),
-    icon: z.string(),
-    parentId: z.string().nullish(),
-  });
-  const form = useForm<z.infer<typeof formSchema>>({
-    resolver: zodResolver(formSchema),
+
+  const form = useForm({
+    resolver: zodResolver(zNewBookmarkListSchema),
     defaultValues: {
-      name: list?.name ?? "",
-      icon: list?.icon ?? "🚀",
-      parentId: list?.parentId ?? parent?.id,
+      name: list?.name ?? prefill?.name ?? "",
+      description: list?.description ?? prefill?.description ?? "",
+      icon: list?.icon ?? prefill?.icon ?? "📁",
+      parentId: list?.parentId ?? prefill?.parentId,
+      type: list?.type ?? prefill?.type ?? "manual",
+      query: list?.query ?? prefill?.query ?? undefined,
     },
   });
   const [open, setOpen] = [
@@ -82,16 +114,27 @@ export function EditListModal({
 
   useEffect(() => {
     form.reset({
-      name: list?.name ?? "",
-      icon: list?.icon ?? "🚀",
-      parentId: list?.parentId ?? parent?.id,
+      name: list?.name ?? prefill?.name ?? "",
+      description: list?.description ?? prefill?.description ?? "",
+      icon: list?.icon ?? prefill?.icon ?? "📁",
+      parentId: list?.parentId ?? prefill?.parentId,
+      type: list?.type ?? prefill?.type ?? "manual",
+      query: list?.query ?? prefill?.query ?? undefined,
     });
   }, [open]);
+
+  const parsedSearchQuery = useMemo(() => {
+    const query = form.getValues().query;
+    if (!query) {
+      return undefined;
+    }
+    return parseSearchQuery(query);
+  }, [form.watch("query")]);
 
   const { mutate: createList, isPending: isCreating } = useCreateBookmarkList({
     onSuccess: (resp) => {
       toast({
-        description: "List has been created!",
+        description: t("toasts.lists.created"),
       });
       setOpen(false);
       router.push(`/dashboard/lists/${resp.id}`);
@@ -115,7 +158,7 @@ export function EditListModal({
       } else {
         toast({
           variant: "destructive",
-          title: "Something went wrong",
+          title: t("common.something_went_wrong"),
         });
       }
     },
@@ -124,7 +167,7 @@ export function EditListModal({
   const { mutate: editList, isPending: isEditing } = useEditBookmarkList({
     onSuccess: () => {
       toast({
-        description: "List has been updated!",
+        description: t("toasts.lists.updated"),
       });
       setOpen(false);
       form.reset();
@@ -147,14 +190,33 @@ export function EditListModal({
       } else {
         toast({
           variant: "destructive",
-          title: "Something went wrong",
+          title: t("common.something_went_wrong"),
         });
       }
     },
   });
+  const listType = form.watch("type");
+
+  useEffect(() => {
+    if (listType !== "smart") {
+      form.resetField("query");
+    }
+  }, [listType]);
 
   const isEdit = !!list;
   const isPending = isCreating || isEditing;
+
+  const onSubmit = form.handleSubmit(
+    (value: z.infer<typeof zNewBookmarkListSchema>) => {
+      value.parentId = value.parentId === "" ? null : value.parentId;
+      value.query = value.type === "smart" ? value.query : undefined;
+      if (isEdit) {
+        editList({ ...value, listId: list.id });
+      } else {
+        createList(value);
+      }
+    },
+  );
 
   return (
     <Dialog
@@ -167,16 +229,11 @@ export function EditListModal({
       {children && <DialogTrigger asChild>{children}</DialogTrigger>}
       <DialogContent>
         <Form {...form}>
-          <form
-            onSubmit={form.handleSubmit((value) => {
-              value.parentId = value.parentId === "" ? null : value.parentId;
-              isEdit
-                ? editList({ ...value, listId: list.id })
-                : createList(value);
-            })}
-          >
+          <form onSubmit={onSubmit}>
             <DialogHeader>
-              <DialogTitle>{isEdit ? "Edit" : "New"} List</DialogTitle>
+              <DialogTitle>
+                {isEdit ? t("lists.edit_list") : t("lists.new_list")}
+              </DialogTitle>
             </DialogHeader>
             <div className="flex w-full gap-2 py-4">
               <FormField
@@ -190,9 +247,8 @@ export function EditListModal({
                           <PopoverTrigger className="h-full rounded border border-input px-2 text-2xl">
                             {field.value}
                           </PopoverTrigger>
-                          <PopoverContent>
-                            <Picker
-                              data={data}
+                          <PopoverContent className="w-auto">
+                            <EmojiPicker
                               onEmojiSelect={(e: { native: string }) =>
                                 field.onChange(e.native)
                               }
@@ -228,29 +284,51 @@ export function EditListModal({
             </div>
             <FormField
               control={form.control}
+              name="description"
+              render={({ field }) => {
+                return (
+                  <FormItem className="grow pb-4">
+                    <FormLabel>{t("lists.description")}</FormLabel>
+                    <FormControl>
+                      <Input
+                        type="text"
+                        className="w-full"
+                        placeholder="Description"
+                        {...field}
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                );
+              }}
+            />
+            <FormField
+              control={form.control}
               name="parentId"
               render={({ field }) => {
                 return (
                   <FormItem className="grow pb-4">
-                    <FormLabel>Parent</FormLabel>
+                    <FormLabel>{t("lists.parent_list")}</FormLabel>
                     <div className="flex items-center gap-1">
                       <FormControl>
                         <BookmarkListSelector
                           // Hide the current list from the list of parents
                           hideSubtreeOf={list ? list.id : undefined}
+                          // Lists can only be nested under lists you own
+                          ownedOnly
                           value={field.value}
                           onChange={field.onChange}
-                          placeholder={"No Parent"}
+                          placeholder={t("lists.no_parent")}
                         />
                       </FormControl>
                       <Button
                         type="button"
                         variant="ghost"
                         onClick={() => {
-                          form.reset({ parentId: null });
+                          form.setValue("parentId", "");
                         }}
                       >
-                        <X />
+                        <X className="size-6" />
                       </Button>
                     </div>
                     <FormMessage />
@@ -258,14 +336,89 @@ export function EditListModal({
                 );
               }}
             />
+            <FormField
+              control={form.control}
+              name="type"
+              render={({ field }) => {
+                return (
+                  <FormItem className="grow pb-4">
+                    <FormLabel>{t("lists.list_type")}</FormLabel>
+                    <FormControl>
+                      <Select
+                        disabled={isEdit}
+                        onValueChange={field.onChange}
+                        value={field.value}
+                      >
+                        <SelectTrigger className="w-full">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="manual">
+                            {t("lists.manual_list")}
+                          </SelectItem>
+                          <SelectItem value="smart">
+                            {t("lists.smart_list")}
+                          </SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                );
+              }}
+            />
+            {listType === "smart" && (
+              <FormField
+                control={form.control}
+                name="query"
+                render={({ field }) => {
+                  return (
+                    <FormItem className="grow pb-4">
+                      <FormLabel>{t("lists.search_query")}</FormLabel>
+                      <div className="relative">
+                        <FormControl>
+                          <Input
+                            value={field.value}
+                            onChange={field.onChange}
+                            placeholder={t("lists.search_query")}
+                            endIcon={
+                              parsedSearchQuery ? (
+                                <QueryExplainerTooltip
+                                  className="stroke-foreground p-1"
+                                  parsedSearchQuery={parsedSearchQuery}
+                                />
+                              ) : undefined
+                            }
+                          />
+                        </FormControl>
+                      </div>
+                      <FormDescription>
+                        <Link
+                          href="https://docs.karakeep.app/Guides/search-query-language"
+                          className="italic"
+                          target="_blank"
+                        >
+                          {t("lists.search_query_help")}
+                        </Link>
+                      </FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  );
+                }}
+              />
+            )}
             <DialogFooter className="sm:justify-end">
               <DialogClose asChild>
                 <Button type="button" variant="secondary">
-                  Close
+                  {t("actions.close")}
                 </Button>
               </DialogClose>
-              <ActionButton type="submit" loading={isPending}>
-                {list ? "Save" : "Create"}
+              <ActionButton
+                type="submit"
+                onClick={onSubmit}
+                loading={isPending}
+              >
+                {list ? t("actions.save") : t("actions.create")}
               </ActionButton>
             </DialogFooter>
           </form>

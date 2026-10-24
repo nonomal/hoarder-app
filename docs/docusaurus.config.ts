@@ -1,115 +1,125 @@
-import {themes as prismThemes} from 'prism-react-renderer';
-import type {Config} from '@docusaurus/types';
-import type * as Preset from '@docusaurus/preset-classic';
+import type * as Preset from "@docusaurus/preset-classic";
+import type { Config } from "@docusaurus/types";
+import type * as OpenApiPlugin from "docusaurus-plugin-openapi-docs";
+import { themes as prismThemes } from "prism-react-renderer";
 
 const config: Config = {
-  title: 'Hoarder Docs',
-  tagline: 'Dinosaurs are cool',
-  favicon: 'img/favicon.ico',
+  title: "Karakeep",
+  tagline: "The bookmark everything app",
+  favicon: "img/favicon.ico",
 
   // Set the production url of your site here
-  url: 'https://docs.hoarder.app',
+  url: "https://docs.karakeep.app",
   // Set the /<baseUrl>/ pathname under which your site is served
   // For GitHub pages deployment, it is often '/<projectName>/'
-  baseUrl: '/',
+  baseUrl: "/",
 
   // GitHub pages deployment config.
   // If you aren't using GitHub pages, you don't need these.
-  organizationName: 'MohamedBassem', // Usually your GitHub org/user name.
-  projectName: 'hoarder-app', // Usually your repo name.
+  organizationName: "karakeep-app", // Usually your GitHub org/user name.
+  projectName: "karakeep", // Usually your repo name.
 
-  onBrokenLinks: 'throw',
-  onBrokenMarkdownLinks: 'warn',
+  onBrokenLinks: "warn",
+  onBrokenMarkdownLinks: "warn",
 
   // Even if you don't use internationalization, you can use this field to set
   // useful metadata like html lang. For example, if your site is Chinese, you
   // may want to replace "en" with "zh-Hans".
   i18n: {
-    defaultLocale: 'en',
-    locales: ['en'],
+    defaultLocale: "en",
+    locales: ["en"],
   },
 
   presets: [
     [
-      'classic',
+      "classic",
       {
         docs: {
-          sidebarPath: './sidebars.ts',
-          editUrl:
-            'https://github.com/MohamedBassem/hoarder-app/tree/main/docs/',
+          sidebarPath: "./sidebars.ts",
+          sidebarItemsGenerator: async ({
+            defaultSidebarItemsGenerator,
+            ...args
+          }) => {
+            const sidebarItems = await defaultSidebarItemsGenerator(args);
+            return sidebarItems.filter(
+              (item) => !(item.type == "category" && item.label === "API"),
+            );
+          },
+          editUrl: "https://github.com/karakeep-app/karakeep/tree/main/docs/",
           routeBasePath: "/",
+          docItemComponent: "@theme/ApiItem",
         },
         blog: false,
         theme: {
-          customCss: './src/css/custom.css',
+          customCss: "./src/css/custom.css",
         },
       } satisfies Preset.Options,
     ],
   ],
+  plugins: [
+    [
+      "@docusaurus/plugin-client-redirects",
+      {},
+    ],
+    [
+      "docusaurus-plugin-openapi-docs",
+      {
+        id: "api",
+        docsPluginId: "classic",
+        config: {
+          karakeep: {
+            specPath: "../packages/open-api/karakeep-openapi-spec.json",
+            outputDir: "docs/api",
+            sidebarOptions: {
+              groupPathsBy: "tag",
+            },
+          } satisfies OpenApiPlugin.Options,
+        },
+      },
+    ],
+  ],
+  themes: ["docusaurus-theme-openapi-docs"],
 
   themeConfig: {
-    image: 'img/opengraph-image.png',
+    image: "img/opengraph-image.png",
     navbar: {
-      title: '',
+      title: "",
       logo: {
-        alt: 'Hoarder Logo',
-        src: 'img/logo-full.svg',
-        srcDark: 'img/logo-full-white.svg',
+        alt: "Karakeep Logo",
+        src: "img/logo-full.svg",
+        srcDark: "img/logo-full-white.svg",
         width: "120px",
       },
       items: [
         {
-          href: 'https://hoarder.app',
-          label: 'Homepage',
-          position: 'right',
+          type: "docsVersionDropdown",
+          position: "right",
         },
         {
-          href: 'https://github.com/MohamedBassem/hoarder-app',
-          label: 'GitHub',
-          position: 'right',
+          href: "https://karakeep.app",
+          label: "Homepage",
+          position: "right",
+        },
+        {
+          href: "https://github.com/karakeep-app/karakeep",
+          label: "GitHub",
+          position: "right",
+        },
+        {
+          href: "https://discord.gg/NrgeYywsFh",
+          label: "Discord",
+          position: "right",
         },
       ],
     },
-    footer: {
-      style: 'dark',
-      links: [
-        {
-          title: 'Docs',
-          items: [
-            {
-              label: 'Introduction',
-              to: '/',
-            },
-          ],
-        },
-        {
-          title: 'Community',
-          items: [
-            {
-              label: 'GitHub',
-              href: 'https://github.com/MohamedBassem/hoarder-app',
-            },
-          ],
-        },
-        {
-          title: 'More',
-          items: [
-            {
-              label: 'Homepage',
-              href: 'https://hoarder.app',
-            },
-            {
-              label: 'GitHub',
-              href: 'https://github.com/MohamedBassem/hoarder-app',
-            },
-            {
-              label: 'Demo',
-              href: 'https://try.hoarder.app',
-            },
-          ],
-        },
-      ],
-      copyright: `Copyright © ${new Date().getFullYear()} Hoarder App. Built with Docusaurus.`,
+
+    algolia: {
+      appId: "V93C1M14G6",
+      // Public API key: it is safe to commit it
+      apiKey: "0eb8853d9740822fb9d21620d5515f35",
+      indexName: "karakeep",
+      contextualSearch: true,
+      insights: true,
     },
     prism: {
       theme: prismThemes.github,

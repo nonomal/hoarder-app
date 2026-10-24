@@ -1,52 +1,72 @@
-import { Text } from "react-native";
-import { api } from "@/lib/trpc";
+import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
+import useAppSettings from "@/lib/settings";
+import QueryPageState from "@/components/QueryPageState";
 
-import type { ZGetBookmarksRequest } from "@hoarder/shared/types/bookmarks";
+import type { ZGetBookmarksRequest } from "@karakeep/shared/types/bookmarks";
+import { useTRPC } from "@karakeep/shared-react/trpc";
+import { BookmarkTypes } from "@karakeep/shared/types/bookmarks";
 
-import FullPageSpinner from "../ui/FullPageSpinner";
 import BookmarkList from "./BookmarkList";
 
 export default function UpdatingBookmarkList({
   query,
   header,
 }: {
-  query: ZGetBookmarksRequest;
+  query: Omit<ZGetBookmarksRequest, "sortOrder" | "includeContent">; // Sort order is handled by mobile settings
   header?: React.ReactElement;
 }) {
-  const apiUtils = api.useUtils();
+  const api = useTRPC();
+  const queryClient = useQueryClient();
+  const { settings } = useAppSettings();
   const {
     data,
     isPending,
     isPlaceholderData,
     error,
     fetchNextPage,
+    hasNextPage,
+    isFetching,
     isFetchingNextPage,
-  } = api.bookmarks.getBookmarks.useInfiniteQuery(query, {
-    initialCursor: null,
-    getNextPageParam: (lastPage) => lastPage.nextCursor,
-  });
+    refetch,
+  } = useInfiniteQuery(
+    api.bookmarks.getBookmarks.infiniteQueryOptions(
+      {
+        ...query,
+        sortOrder: settings.bookmarkSortOrder,
+        useCursorV2: true,
+        includeContent: false,
+      },
+      {
+        initialCursor: null,
+        getNextPageParam: (lastPage) => lastPage.nextCursor,
+      },
+    ),
+  );
 
-  if (error) {
-    return <Text>{JSON.stringify(error)}</Text>;
-  }
-
-  if (isPending || !data) {
-    return <FullPageSpinner />;
+  if (!data) {
+    return <QueryPageState error={error} onRetry={() => refetch()} />;
   }
 
   const onRefresh = () => {
-    apiUtils.bookmarks.getBookmarks.invalidate();
-    apiUtils.bookmarks.getBookmark.invalidate();
+    queryClient.invalidateQueries(api.bookmarks.getBookmarks.pathFilter());
+    queryClient.invalidateQueries(api.bookmarks.getBookmark.pathFilter());
+  };
+
+  const onEndReached = () => {
+    if (!hasNextPage || isFetching) {
+      return;
+    }
+    void fetchNextPage({ cancelRefetch: false });
   };
 
   return (
     <BookmarkList
       bookmarks={data.pages
         .flatMap((p) => p.bookmarks)
-        .filter((b) => b.content.type != "unknown")}
+        .filter((b) => b.content.type != BookmarkTypes.UNKNOWN)}
       header={header}
       onRefresh={onRefresh}
-      fetchNextPage={fetchNextPage}
+      fetchNextPage={onEndReached}
       isFetchingNextPage={isFetchingNextPage}
       isRefreshing={isPending || isPlaceholderData}
     />

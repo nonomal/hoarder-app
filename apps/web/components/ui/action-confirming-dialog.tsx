@@ -8,6 +8,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import { useTranslation } from "@/lib/i18n/client";
 
 import { Button } from "./button";
 
@@ -16,6 +17,7 @@ export default function ActionConfirmingDialog({
   description,
   actionButton,
   children,
+  onCloseAutoFocus,
   open: userIsOpen,
   setOpen: userSetOpen,
 }: {
@@ -24,8 +26,10 @@ export default function ActionConfirmingDialog({
   title: React.ReactNode;
   description: React.ReactNode;
   actionButton: (setDialogOpen: (open: boolean) => void) => React.ReactNode;
-  children: React.ReactNode;
+  children?: React.ReactNode;
+  onCloseAutoFocus?: (e: Event) => void;
 }) {
+  const { t } = useTranslation();
   const [customIsOpen, setCustomIsOpen] = useState(false);
   const [isDialogOpen, setDialogOpen] = [
     userIsOpen ?? customIsOpen,
@@ -33,8 +37,8 @@ export default function ActionConfirmingDialog({
   ];
   return (
     <Dialog open={isDialogOpen} onOpenChange={setDialogOpen}>
-      <DialogTrigger asChild>{children}</DialogTrigger>
-      <DialogContent>
+      {children && <DialogTrigger asChild>{children}</DialogTrigger>}
+      <DialogContent onCloseAutoFocus={onCloseAutoFocus}>
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
         </DialogHeader>
@@ -42,7 +46,7 @@ export default function ActionConfirmingDialog({
         <DialogFooter className="sm:justify-end">
           <DialogClose asChild>
             <Button type="button" variant="secondary">
-              Close
+              {t("actions.close")}
             </Button>
           </DialogClose>
           {actionButton(setDialogOpen)}

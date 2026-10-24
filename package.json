@@ -1,6 +1,6 @@
 {
   "$schema": "https://json.schemastore.org/package.json",
-  "name": "hoarder",
+  "name": "@karakeep/root",
   "version": "0.1.0",
   "private": true,
   "scripts": {
@@ -8,35 +8,37 @@
     "dev": "turbo dev --parallel",
     "clean": "git clean -xdf node_modules",
     "clean:workspaces": "turbo clean",
-    "db:migrate": "pnpm --filter @hoarder/db run migrate",
-    "db:studio": "pnpm --filter @hoarder/db studio",
-    "workers": "pnpm --filter @hoarder/workers run start",
-    "web": "pnpm --filter @hoarder/web run dev",
+    "db:generate": "pnpm --filter @karakeep/db run generate",
+    "db:migrate": "pnpm --filter @karakeep/db run migrate",
+    "db:migrate:queue": "pnpm --filter @karakeep/workers run migrate:queue",
+    "db:studio": "pnpm --filter @karakeep/db studio",
+    "seed:apply": "pnpm --filter @karakeep/seed-snapshot run apply",
+    "seed:snapshot": "pnpm --filter @karakeep/seed-snapshot run snapshot",
+    "workers": "pnpm --filter @karakeep/workers run start",
+    "web": "pnpm --filter @karakeep/web run dev",
+    "web:portless": "pnpm --filter @karakeep/web run dev:portless",
+    "dev:worktree": "bash scripts/dev-worktree.sh",
+    "android": "pnpm --filter @karakeep/mobile android",
+    "ios": "pnpm --filter @karakeep/mobile ios",
     "prepare": "husky",
-    "format": "turbo format --continue -- --cache --cache-location node_modules/.cache/.prettiercache",
-    "format:fix": "turbo format --continue -- --write --cache --cache-location node_modules/.cache/.prettiercache",
-    "lint": "turbo lint --continue -- --cache --cache-location node_modules/.cache/.eslintcache",
-    "lint:fix": "turbo lint --continue -- --fix --cache --cache-location node_modules/.cache/.eslintcache",
-    "lint:ws": "pnpm dlx sherif@latest",
-    "postinstall": "pnpm lint:ws",
-    "typecheck": "turbo typecheck"
+    "format": "turbo format --continue",
+    "format:fix": "turbo format:fix --continue",
+    "lint": "turbo lint --continue",
+    "lint:fix": "turbo lint:fix --continue",
+    "test": "turbo test",
+    "typecheck": "turbo typecheck",
+    "preflight": "turbo run typecheck lint format",
+    "preflight:fix": "turbo run typecheck lint:fix format:fix"
+  },
+  "dependencies": {
+    "husky": "^9.0.11"
   },
   "devDependencies": {
-    "@hoarder/prettier-config": "workspace:^0.1.0",
-    "@tanstack/eslint-plugin-query": "^5.20.1",
-    "@types/node": "^20",
-    "es-errors": "^1.3.0",
-    "eslint": "^8.57.0",
-    "husky": "^9.0.11",
-    "install": "^0.13.0",
-    "prettier": "3.2.5",
-    "turbo": "^1.13.2"
+    "@types/node": "^24",
+    "oxfmt": "^0.72.0",
+    "oxlint": "^1.87.0",
+    "sherif": "^1.6.1",
+    "turbo": "^2.10.13"
   },
-  "prettier": "@hoarder/prettier-config",
-  "packageManager": "pnpm@9.0.0-alpha.8+sha256.a433a59569b00389a951352956faf25d1fdf43b568213fbde591c36274d4bc30",
-  "pnpm": {
-    "patchedDependencies": {
-      "xcode@3.0.1": "patches/xcode@3.0.1.patch"
-    }
-  }
+  "packageManager": "pnpm@11.2.1"
 }

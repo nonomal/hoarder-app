@@ -1,34 +1,49 @@
 import type { Metadata } from "next";
 import { Inter } from "next/font/google";
+import { NuqsAdapter } from "nuqs/adapters/next/app";
 
-import "@hoarder/tailwind-config/globals.css";
+import "@karakeep/tailwind-config/globals.css";
 
 import type { Viewport } from "next";
 import React from "react";
-import { cookies } from "next/headers";
-import { Toaster } from "@/components/ui/toaster";
 import Providers from "@/lib/providers";
-import {
-  defaultUserLocalSettings,
-  parseUserLocalSettings,
-  USER_LOCAL_SETTINGS_COOKIE_NAME,
-} from "@/lib/userLocalSettings/types";
+import { getUserLocalSettings } from "@/lib/userLocalSettings/userLocalSettings";
 import { getServerAuthSession } from "@/server/auth";
 import { ReactQueryDevtools } from "@tanstack/react-query-devtools";
+import { Toaster } from "sonner";
 
-import { clientConfig } from "@hoarder/shared/config";
+import { clientConfig } from "@karakeep/shared/config";
 
-const inter = Inter({ subsets: ["latin"] });
+const inter = Inter({
+  subsets: ["latin"],
+  fallback: ["sans-serif"],
+});
 
 export const metadata: Metadata = {
-  title: "Hoarder",
-  applicationName: "Hoarder",
+  title: "Karakeep",
+  applicationName: "Karakeep",
   description:
     "The Bookmark Everything app. Hoard links, notes, and images and they will get automatically tagged AI.",
-  manifest: "/manifest.json",
+  icons: {
+    icon: [
+      {
+        url: "/icons/logo-icon.svg",
+        type: "image/svg+xml",
+        sizes: "any",
+        media: "(prefers-color-scheme: light)",
+      },
+      {
+        url: "/icons/logo-icon-dark.svg",
+        type: "image/svg+xml",
+        sizes: "any",
+        media: "(prefers-color-scheme: dark)",
+      },
+    ],
+    apple: "/apple-icon.png",
+  },
   appleWebApp: {
     capable: true,
-    title: "Hoarder",
+    title: "Karakeep",
   },
   formatDetection: {
     telephone: false,
@@ -40,6 +55,14 @@ export const viewport: Viewport = {
   initialScale: 1,
   maximumScale: 1,
   userScalable: false,
+  // Values match the `--background` token in tooling/tailwind/globals.css.
+  // These follow the OS color scheme only. An in-app theme override via
+  // next-themes is not reflected here, so chrome can differ from the page
+  // when a user picks a theme opposite to their system preference.
+  themeColor: [
+    { media: "(prefers-color-scheme: light)", color: "#ffffff" },
+    { media: "(prefers-color-scheme: dark)", color: "#020817" },
+  ],
 };
 
 export default async function RootLayout({
@@ -48,22 +71,26 @@ export default async function RootLayout({
   children: React.ReactNode;
 }>) {
   const session = await getServerAuthSession();
+  const userSettings = await getUserLocalSettings();
+  const isRTL = userSettings.lang === "ar";
   return (
-    <html lang="en">
+    <html
+      lang={userSettings.lang}
+      dir={isRTL ? "rtl" : "ltr"}
+      suppressHydrationWarning
+    >
       <body className={inter.className}>
-        <Providers
-          session={session}
-          clientConfig={clientConfig}
-          userLocalSettings={
-            parseUserLocalSettings(
-              cookies().get(USER_LOCAL_SETTINGS_COOKIE_NAME)?.value,
-            ) ?? defaultUserLocalSettings()
-          }
-        >
-          {children}
-          <ReactQueryDevtools initialIsOpen={false} />
-        </Providers>
-        <Toaster />
+        <NuqsAdapter>
+          <Providers
+            session={session}
+            clientConfig={clientConfig}
+            userLocalSettings={await getUserLocalSettings()}
+          >
+            {children}
+            <ReactQueryDevtools initialIsOpen={false} />
+          </Providers>
+          <Toaster />
+        </NuqsAdapter>
       </body>
     </html>
   );
